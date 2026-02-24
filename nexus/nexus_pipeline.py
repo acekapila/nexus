@@ -21,23 +21,56 @@ Approval flow:
 import os
 import asyncio
 import json
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
 from dotenv import load_dotenv
 
-load_dotenv()
+# ── Load .env ──────────────────────────────────────────────────────────────────
+# Search upward from this file's location so it works regardless of CWD.
+# On VPS the layout is:  /home/azureuser/nexus/nexus/.env
+#                     or /home/azureuser/nexus/.env  (root)
+_here = Path(__file__).resolve().parent
+for _candidate in [_here / ".env", _here.parent / ".env"]:
+    if _candidate.exists():
+        load_dotenv(_candidate)
+        break
+else:
+    load_dotenv()  # fall back to default search
 
 # ── Imports ────────────────────────────────────────────────────────────────────
 
 from notion_task_manager import NotionTaskManager
 
-# Article generator imports — these live in the article-generator directory
-# Adjust sys.path if they're in a different location on your VPS
-import sys
+# Article generator path — injected into sys.path so its modules are importable.
+# Also add the article generator's site-packages if it has its own .venv.
+ARTICLE_GENERATOR_PATH = os.getenv("ARTICLE_GENERATOR_PATH", "")
 
-ARTICLE_GENERATOR_PATH = os.getenv("ARTICLE_GENERATOR_PATH", ".")
-if ARTICLE_GENERATOR_PATH not in sys.path:
-    sys.path.insert(0, ARTICLE_GENERATOR_PATH)
+def _setup_article_generator_path():
+    """Add article generator directory (and its venv if present) to sys.path."""
+    if not ARTICLE_GENERATOR_PATH:
+        return
+    ag_path = Path(ARTICLE_GENERATOR_PATH).resolve()
+    if not ag_path.exists():
+        print(f"  ⚠️  ARTICLE_GENERATOR_PATH does not exist: {ag_path}")
+        return
+    # Add the generator directory itself
+    ag_str = str(ag_path)
+    if ag_str not in sys.path:
+        sys.path.insert(0, ag_str)
+    # Only inject the article generator's own venv site-packages when the path
+    # is absolute (VPS deployments always use absolute paths like /home/ubuntu/...).
+    # Relative paths mean local dev — skip venv injection to avoid dep conflicts.
+    if Path(ARTICLE_GENERATOR_PATH).is_absolute():
+        for _venv in [ag_path / ".venv", ag_path / "venv"]:
+            for _sp in _venv.glob("lib/python*/site-packages"):
+                sp_str = str(_sp)
+                if sp_str not in sys.path:
+                    sys.path.insert(1, sp_str)
+                    break
+
+_setup_article_generator_path()
 
 
 # ── Stage Callbacks ────────────────────────────────────────────────────────────
@@ -119,10 +152,14 @@ class NexusPipeline:
                 self._article_system = EnhancedQualityControlledArticleSystemWithAudio()
                 print("✅ Article system loaded")
             except ImportError as e:
+                ag_resolved = str(Path(ARTICLE_GENERATOR_PATH).resolve()) if ARTICLE_GENERATOR_PATH else "(not set)"
+                ag_exists = Path(ARTICLE_GENERATOR_PATH).exists() if ARTICLE_GENERATOR_PATH else False
                 raise ImportError(
                     f"Could not import article generator: {e}\n"
-                    f"Make sure ARTICLE_GENERATOR_PATH is set correctly in .env\n"
-                    f"Current path: {ARTICLE_GENERATOR_PATH}"
+                    f"ARTICLE_GENERATOR_PATH = {ARTICLE_GENERATOR_PATH!r}\n"
+                    f"Resolved path         = {ag_resolved}  (exists={ag_exists})\n"
+                    f"sys.path entries      = {[p for p in sys.path[:6]]}\n"
+                    f"Fix: update ARTICLE_GENERATOR_PATH in your .env to the full absolute path of ai-article-generator/"
                 )
         return self._article_system
 
