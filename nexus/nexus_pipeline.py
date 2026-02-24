@@ -330,10 +330,10 @@ class NexusPipeline:
                 ps_gen = ImprovedPodcastScriptGenerator()
                 article_result["article_content"] = current_content
                 article_result["article_title"] = current_title
-                ps_result = await ps_gen.generate_podcast_script(article_result)
+                ps_result = await ps_gen.generate_clean_podcast_script(article_result)
                 if ps_result.get("success"):
-                    podcast_script = ps_result.get("podcast_script")
-                    print(f"  ✅ Podcast script generated")
+                    podcast_script = ps_result.get("clean_script")
+                    print(f"  ✅ Podcast script generated ({ps_result.get('metadata', {}).get('word_count', '?')} words, ~{ps_result.get('metadata', {}).get('estimated_duration_minutes', '?')} min)")
             except Exception as e:
                 print(f"  ⚠️ Podcast script skipped: {e}")
 
