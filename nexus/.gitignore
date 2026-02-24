@@ -1,0 +1,22 @@
+# Secrets — never commit these
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Backups
+*.bck
+*.bak
+backup/
+
+# uv/pip
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db

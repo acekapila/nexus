@@ -1,0 +1,34 @@
+# Secrets — never commit these
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Backups
+*.bck
+*.bak
+backup/
+
+# uv/pip
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated audio/article output
+ai-article-generator/audio_output/
+ai-article-generator/generated_articles/
+ai-article-generator/clean_podcast_scripts/
+ai-article-generator/notion_db_ids.json
+
+# Notion token files
+notion_db_ids.json
+
+# Test/debug scripts (optional — remove if you want these tracked)
+ai-article-generator/notion-test-script.py

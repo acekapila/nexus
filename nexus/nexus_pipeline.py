@@ -1,0 +1,693 @@
+"""
+nexus_pipeline.py
+Phase 4 — Content Pipeline Integration for Nexus
+
+Wraps the existing article generator with:
+  1. Notion tracking from start to finish
+  2. Status updates at each pipeline stage
+  3. Draft saved to Notion as a reviewable page
+  4. Discord notification when ready for review
+  5. Human-in-the-loop gate (publish only after approval)
+  6. Approval triggers WordPress + LinkedIn publishing
+
+Usage (from Skyler or standalone):
+    pipeline = NexusPipeline()
+    result = await pipeline.run("OSEP shellcode evasion techniques")
+
+Approval flow:
+    result = await pipeline.publish(content_id)  # called after Notion approval
+"""
+
+import os
+import asyncio
+import json
+from datetime import datetime
+from typing import Dict, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ── Imports ────────────────────────────────────────────────────────────────────
+
+from notion_task_manager import NotionTaskManager
+
+# Article generator imports — these live in the article-generator directory
+# Adjust sys.path if they're in a different location on your VPS
+import sys
+
+ARTICLE_GENERATOR_PATH = os.getenv("ARTICLE_GENERATOR_PATH", ".")
+if ARTICLE_GENERATOR_PATH not in sys.path:
+    sys.path.insert(0, ARTICLE_GENERATOR_PATH)
+
+
+# ── Stage Callbacks ────────────────────────────────────────────────────────────
+
+class PipelineProgressReporter:
+    """
+    Reports pipeline progress back to Notion and optionally Discord.
+    Passed into the article generator to receive stage updates.
+    """
+
+    def __init__(self, ntm: NotionTaskManager, content_id: str, discord_cb=None):
+        self.ntm = ntm
+        self.content_id = content_id
+        self.discord_cb = discord_cb  # optional sync callable(message: str) — uses run_coroutine_threadsafe internally
+        self.stage_log = []
+
+    async def update(self, notion_status: str, message: str,
+                     quality_score: float = None,
+                     research_score: float = None,
+                     word_count: int = None,
+                     urls_browsed: int = None,
+                     model_used: str = None,
+                     cost: float = None):
+        """Update Notion status and optionally ping Discord."""
+        print(f"  📡 Pipeline: {message}")
+        self.stage_log.append({"status": notion_status, "message": message,
+                                "time": datetime.now().isoformat()})
+
+        await self.ntm.update_content_status(
+            self.content_id,
+            status=notion_status,
+            quality_score=quality_score,
+            research_score=research_score,
+            word_count=word_count,
+            urls_browsed=urls_browsed,
+            model_used=model_used,
+            cost=cost,
+        )
+
+        if self.discord_cb:
+            self.discord_cb(f"📡 **{message}**")
+
+
+# ── Main Pipeline ──────────────────────────────────────────────────────────────
+
+class NexusPipeline:
+    """
+    Orchestrates the full article pipeline with Notion integration.
+    
+    Flow:
+      run(topic) →
+        [Notion: Researching] → research
+        [Notion: Drafting]    → generate
+        [Notion: QA]          → quality control
+        [Notion: Your Review] → save draft to Notion, notify Discord
+        
+      publish(content_id) →   ← called after you approve in Discord/Notion
+        [Notion: Approved]    → generate audio
+        [Notion: Published]   → WordPress + LinkedIn
+    """
+
+    def __init__(self, discord_notify_cb=None):
+        """
+        discord_notify_cb: optional sync callable(message: str)
+        Must be thread-safe (uses run_coroutine_threadsafe internally).
+        Used to send progress updates back to Discord during pipeline run.
+        """
+        self.discord_cb = discord_notify_cb
+        self._article_system = None
+        self._pending_publishes: Dict[str, Dict] = {}  # content_id → article_result
+
+    def _get_article_system(self):
+        """Lazy-load the article system (heavy imports)."""
+        if self._article_system is None:
+            try:
+                from enhanced_complete_article_system_with_audio import (
+                    EnhancedQualityControlledArticleSystemWithAudio
+                )
+                self._article_system = EnhancedQualityControlledArticleSystemWithAudio()
+                print("✅ Article system loaded")
+            except ImportError as e:
+                raise ImportError(
+                    f"Could not import article generator: {e}\n"
+                    f"Make sure ARTICLE_GENERATOR_PATH is set correctly in .env\n"
+                    f"Current path: {ARTICLE_GENERATOR_PATH}"
+                )
+        return self._article_system
+
+    async def run(
+        self,
+        topic: str,
+        content_type: str = "article",
+        audience: str = None,
+        article_type: str = "how-to",
+        max_urls: int = 6,
+        generate_audio: bool = True,
+        notify_discord: bool = True,
+    ) -> Dict:
+        """
+        Run the pipeline up to the review gate.
+        
+        Creates a Notion content item, runs Research → Generate → QA,
+        saves the draft to Notion, and pauses for human approval.
+        
+        Returns dict with:
+          - content_id: Notion page ID (use this to approve)
+          - draft_url:  Link to the draft in Notion
+          - success:    True if draft is ready for review
+          - title:      Generated article title
+          - metrics:    Word count, quality score, etc.
+        """
+        print(f"\n🚀 Nexus Pipeline starting: '{topic}'")
+        ntm = NotionTaskManager()
+
+        try:
+            # ── Step 1: Create Notion tracking entry ─────────────────────────
+            print("📋 Creating Notion content item...")
+            content_id = await ntm.create_content_item(
+                topic=topic,
+                content_type=content_type,
+                audience=audience,
+                notes=f"Pipeline started: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            )
+
+            if not content_id:
+                return {"success": False, "error": "Failed to create Notion content item"}
+
+            # Deduplication: if an active pipeline entry already exists, surface it to the user
+            if content_id.startswith("EXISTS:"):
+                existing_id = content_id[7:]
+                existing = await ntm.find_content_item_by_title(topic)
+                draft_url = existing.get("draft_url", "") if existing else ""
+                status = existing.get("status", "unknown") if existing else "unknown"
+                msg = (
+                    f"⚠️ An active content pipeline entry already exists for this topic.\n\n"
+                    f"📝 **{topic}**\n"
+                    f"Status: {status}\n"
+                    f"Content ID: `{existing_id[:8]}`"
+                )
+                if draft_url:
+                    msg += f"\n👀 Draft in Notion: {draft_url}"
+                if status == "👀 Your Review":
+                    msg += f"\n\nTo publish: `approve article {existing_id[:8]}`"
+                else:
+                    msg += f"\n\nIf you want to start a completely fresh pipeline for this topic, let me know."
+                if self.discord_cb and notify_discord:
+                    self.discord_cb(msg)
+                return {"success": False, "error": "duplicate", "message": msg, "content_id": existing_id}
+
+            reporter = PipelineProgressReporter(
+                ntm, content_id,
+                discord_cb=self.discord_cb if notify_discord else None
+            )
+
+            if self.discord_cb and notify_discord:
+                self.discord_cb(
+                    f"🚀 **Pipeline started:** _{topic}_\n"
+                    f"Track progress in Notion → Content Pipeline"
+                )
+
+            # ── Step 2: Research ──────────────────────────────────────────────
+            await reporter.update("researching", f"Researching: {topic}")
+
+            system = self._get_article_system()
+
+            # Run research phase only
+            research_data = {}
+            if system.enhanced_research_available:
+                try:
+                    research_data = await system.researcher.deep_research_topic_with_browsing(
+                        topic, max_urls_to_browse=max_urls
+                    )
+                    urls_browsed = research_data.get("urls_analyzed", 0)
+                    words = research_data.get("total_words_browsed", 0)
+                    print(f"  ✅ Research complete: {urls_browsed} URLs, {words} words")
+                    await reporter.update(
+                        "researching",
+                        f"Research complete — {urls_browsed} URLs, {words} words",
+                        urls_browsed=urls_browsed,
+                    )
+                except Exception as e:
+                    print(f"  ⚠️ Enhanced research failed: {e}, falling back")
+                    research_data = {"web_research_enabled": False}
+            elif system.perplexity_available:
+                try:
+                    results = await system.researcher.research_topic_comprehensive(topic)
+                    research_data = system.researcher.format_research_for_article_generation(results)
+                    await reporter.update("researching", "Standard research complete",
+                                          research_score=float(research_data.get("sources_analyzed", 0)))
+                except Exception as e:
+                    print(f"  ⚠️ Research failed: {e}")
+                    research_data = {"web_research_enabled": False}
+            else:
+                research_data = {"web_research_enabled": False}
+
+            # ── Step 3: Generate article ──────────────────────────────────────
+            await reporter.update("drafting", "Generating article draft...")
+
+            article_result = await system.generator.generate_article_with_enhanced_research(
+                topic, research_data, audience, article_type
+            )
+
+            if not article_result["success"]:
+                await reporter.update("rejected", "Article generation failed")
+                return {"success": False, "error": "Article generation failed", "content_id": content_id}
+
+            current_content = article_result["article_content"]
+            current_title = article_result["article_title"]
+            print(f"  ✅ Draft generated: {len(current_content)} chars — '{current_title}'")
+
+            # ── Step 4: Quality control ───────────────────────────────────────
+            await reporter.update("qa", "Running quality control checks...")
+
+            max_cycles = 2
+            quality_logs = []
+            for cycle in range(max_cycles):
+                qc = await system.generator.quality_agent.check_article_quality(current_content, topic)
+                if qc["success"]:
+                    qa = qc["quality_analysis"]
+                    quality_logs.append(qa)
+                    passed = (
+                        qa.get("overall_quality") in ["good", "excellent"]
+                        and qa.get("completeness_score", 0) >= 7
+                        and not qa.get("needs_revision", False)
+                    )
+                    if passed:
+                        break
+                    elif cycle < max_cycles - 1:
+                        fix = await system.generator.quality_agent.fix_structure_issues(
+                            current_content, qa, topic
+                        )
+                        if fix["success"]:
+                            current_content = fix["fixed_content"]
+                            current_title = await system.generator._generate_title_from_content(
+                                current_content, topic
+                            )
+                else:
+                    quality_logs.append({"overall_quality": "fair", "completeness_score": 6})
+                    break
+
+            quality_score = float(quality_logs[-1].get("completeness_score", 0)) if quality_logs else 0.0
+
+            # ── Step 5: Readability pass ──────────────────────────────────────
+            readability = await system.generator.quality_agent.improve_readability(current_content, topic)
+            if readability["success"]:
+                current_content = readability["improved_content"]
+                current_title = await system.generator._generate_title_from_content(current_content, topic)
+
+            # ── Step 6: Generate podcast script ──────────────────────────────
+            podcast_script = None
+            try:
+                from podcast_script_generator import ImprovedPodcastScriptGenerator
+                ps_gen = ImprovedPodcastScriptGenerator()
+                article_result["article_content"] = current_content
+                article_result["article_title"] = current_title
+                ps_result = await ps_gen.generate_podcast_script(article_result)
+                if ps_result.get("success"):
+                    podcast_script = ps_result.get("podcast_script")
+                    print(f"  ✅ Podcast script generated")
+            except Exception as e:
+                print(f"  ⚠️ Podcast script skipped: {e}")
+
+            # ── Step 7: Word count + metrics ──────────────────────────────────
+            word_count = len(current_content.split())
+            urls_browsed = article_result.get("urls_browsed", 0)
+
+            # Update article_result with final content
+            article_result["article_content"] = current_content
+            article_result["article_title"] = current_title
+            article_result["unified_title"] = current_title
+
+            # ── Step 8: Save draft to Notion + move to Review ─────────────────
+            print("📝 Saving draft to Notion...")
+            draft_url = await ntm.save_draft_to_notion(
+                content_item_id=content_id,
+                title=current_title,
+                article_content=current_content,
+                meta_description=article_result.get("meta_description"),
+                podcast_script=podcast_script,
+            )
+
+            # save_draft_to_notion already moves status to "Your Review"
+            # but we also want to update the metadata
+            await ntm.update_content_status(
+                content_id,
+                status="review",
+                title=current_title,
+                quality_score=quality_score,
+                word_count=word_count,
+                urls_browsed=urls_browsed,
+                model_used="GPT-4o-mini",
+                draft_page_url=draft_url,
+            )
+
+            # ── Step 9: Store pending publish data ────────────────────────────
+            self._pending_publishes[content_id] = {
+                "article_result": article_result,
+                "podcast_script": podcast_script,
+                "generate_audio": generate_audio,
+                "topic": topic,
+                "title": current_title,
+                "stored_at": datetime.now().isoformat(),
+            }
+
+            # ── Step 10: Discord notification ─────────────────────────────────
+            if self.discord_cb and notify_discord:
+                self.discord_cb(
+                    f"✅ **Draft ready for your review!**\n\n"
+                    f"📝 **{current_title}**\n"
+                    f"📊 {word_count} words | Quality: {quality_score:.0f}/10 | "
+                    f"{urls_browsed} URLs researched\n\n"
+                    f"👀 Review in Notion: {draft_url}\n\n"
+                    f"To publish: `Skyler approve content {content_id[:8]}`"
+                )
+
+            print(f"\n✅ Draft ready for review!")
+            print(f"   Title:      {current_title}")
+            print(f"   Words:      {word_count}")
+            print(f"   Quality:    {quality_score:.0f}/10")
+            print(f"   Draft URL:  {draft_url}")
+            print(f"   Content ID: {content_id}")
+
+            return {
+                "success": True,
+                "content_id": content_id,
+                "draft_url": draft_url,
+                "title": current_title,
+                "word_count": word_count,
+                "quality_score": quality_score,
+                "urls_browsed": urls_browsed,
+                "stage": "awaiting_review",
+            }
+
+        except Exception as e:
+            print(f"❌ Pipeline error: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await ntm.update_content_status(content_id if "content_id" in dir() else "", "rejected")
+            except Exception:
+                pass
+            return {"success": False, "error": str(e)}
+        finally:
+            await ntm.close()
+
+    async def publish(self, content_id: str, notify_discord: bool = True) -> Dict:
+        """
+        Publish an approved draft to WordPress + LinkedIn.
+        
+        Call this after you approve the draft in Notion/Discord.
+        Retrieves the stored article data and runs the publishing phase.
+        
+        Returns dict with wordpress_url, linkedin_success, etc.
+        """
+        print(f"\n📤 Publishing approved content: {content_id[:8]}...")
+
+        pending = self._pending_publishes.get(content_id)
+        ntm = NotionTaskManager()
+
+        try:
+            if not pending:
+                # Try to load from Notion if we don't have it in memory
+                # (e.g. if bot was restarted between draft and approval)
+                return {
+                    "success": False,
+                    "error": (
+                        f"No pending publish data found for {content_id[:8]}. "
+                        "If the bot was restarted after the draft was created, "
+                        "you'll need to re-run the pipeline."
+                    )
+                }
+
+            article_result = pending["article_result"]
+            generate_audio = pending.get("generate_audio", True)
+            title = pending["title"]
+
+            await ntm.update_content_status(content_id, "approved")
+
+            system = self._get_article_system()
+
+            if self.discord_cb and notify_discord:
+                self.discord_cb(f"📤 **Publishing '{title}'...**")
+
+            # ── Audio generation ──────────────────────────────────────────────
+            audio_files = []
+            if generate_audio and system.audio_available:
+                print("🎤 Generating audio...")
+                try:
+                    audio_result = await system.audio_generator.generate_article_audio(
+                        article_result, output_dir="audio_output"
+                    )
+                    if audio_result["success"]:
+                        audio_files.extend(audio_result["audio_files"])
+                        print(f"  ✅ Audio: {len(audio_files)} files")
+                except Exception as e:
+                    print(f"  ⚠️ Audio failed: {e}")
+
+            # ── WordPress publishing ──────────────────────────────────────────
+            wordpress_url = None
+            if system.wordpress_available:
+                print("🌐 Publishing to WordPress...")
+                try:
+                    wp_result = await system.wordpress.publish_article_with_audio(
+                        article_result,
+                        audio_files=audio_files if audio_files else None,
+                        status="publish",
+                    )
+                    if wp_result["success"]:
+                        wordpress_url = wp_result["post_url"]
+                        await ntm.update_content_status(
+                            content_id, "published",
+                            wordpress_url=wordpress_url,
+                            published_date=datetime.now().date().isoformat(),
+                            audio_generated=bool(audio_files),
+                        )
+                        print(f"  ✅ Published: {wordpress_url}")
+                    else:
+                        print(f"  ❌ WordPress failed: {wp_result.get('error')}")
+                except Exception as e:
+                    print(f"  ❌ WordPress error: {e}")
+            else:
+                print("  ⚠️ WordPress not configured — marking as published without URL")
+                await ntm.update_content_status(content_id, "published",
+                                                 published_date=datetime.now().date().isoformat())
+
+            # ── LinkedIn posting ──────────────────────────────────────────────
+            linkedin_success = False
+            if system.linkedin_available and wordpress_url:
+                print("📱 Posting to LinkedIn...")
+                try:
+                    enhanced_post = await system.generator.generate_enhanced_linkedin_post(
+                        article_result, wordpress_url
+                    )
+                    if enhanced_post["success"] and audio_files:
+                        post_content = enhanced_post["linkedin_content"]
+                        if "📗 Read more:" in post_content:
+                            post_content = post_content.replace(
+                                "📗 Read more:",
+                                "🎧 Audio version available!\n\n📗 Read or listen:"
+                            )
+                        enhanced_post["linkedin_content"] = post_content
+
+                    if enhanced_post["success"]:
+                        article_copy = article_result.copy()
+                        article_copy["linkedin_post_override"] = enhanced_post["linkedin_content"]
+                        li_result = await system.linkedin.post_to_linkedin_with_url(
+                            article_copy, wordpress_url
+                        )
+                    else:
+                        li_result = await system.linkedin.post_to_linkedin_with_url(
+                            article_result, wordpress_url
+                        )
+
+                    linkedin_success = li_result.get("success", False)
+                    if linkedin_success:
+                        print("  ✅ LinkedIn posted")
+                    else:
+                        print(f"  ⚠️ LinkedIn: {li_result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    print(f"  ⚠️ LinkedIn error: {e}")
+
+            # ── Discord completion notification ───────────────────────────────
+            if self.discord_cb and notify_discord:
+                lines = [f"🚀 **Published: _{title}_**\n"]
+                if wordpress_url:
+                    lines.append(f"🌐 WordPress: {wordpress_url}")
+                if audio_files:
+                    lines.append(f"🎧 Audio: {len(audio_files)} file(s) embedded")
+                if linkedin_success:
+                    lines.append("📱 LinkedIn: Posted ✅")
+                self.discord_cb("\n".join(lines))
+
+            # Clean up pending store
+            self._pending_publishes.pop(content_id, None)
+
+            return {
+                "success": True,
+                "content_id": content_id,
+                "title": title,
+                "wordpress_url": wordpress_url,
+                "linkedin_posted": linkedin_success,
+                "audio_files": len(audio_files),
+            }
+
+        except Exception as e:
+            print(f"❌ Publish error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e), "content_id": content_id}
+        finally:
+            await ntm.close()
+
+    def get_pending_reviews(self) -> list:
+        """Return list of content IDs waiting to be published."""
+        return [
+            {
+                "content_id": cid,
+                "title": data["title"],
+                "topic": data["topic"],
+                "stored_at": data["stored_at"],
+            }
+            for cid, data in self._pending_publishes.items()
+        ]
+
+
+# ── Skyler Tool Wrappers ───────────────────────────────────────────────────────
+
+# Global pipeline instance — shared across Skyler tool calls
+_pipeline: Optional[NexusPipeline] = None
+_discord_cb = None
+
+
+def init_pipeline(discord_notify_callback=None):
+    """
+    Initialise the global pipeline instance.
+    Call this from main.py on_ready() passing Skyler's send function.
+    """
+    global _pipeline, _discord_cb
+    _discord_cb = discord_notify_callback
+    _pipeline = NexusPipeline(discord_notify_cb=discord_notify_callback)
+    print("✅ Nexus pipeline initialised")
+
+
+def get_pipeline() -> NexusPipeline:
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = NexusPipeline()
+    return _pipeline
+
+
+def nexus_write_article(
+    topic: str,
+    content_type: str = "article",
+    audience: str = None,
+    max_urls: int = 6,
+    generate_audio: bool = True,
+) -> str:
+    """
+    Trigger the full content pipeline for a given topic.
+    Runs Research → Generate → QA → saves draft to Notion.
+    Sends Discord notification when ready for review.
+    Returns immediately with the content ID for tracking.
+
+    This is the main trigger for content creation in Nexus.
+    """
+    import concurrent.futures
+
+    pipeline = get_pipeline()
+
+    def _run():
+        return asyncio.run(pipeline.run(
+            topic=topic,
+            content_type=content_type,
+            audience=audience,
+            max_urls=max_urls,
+            generate_audio=generate_audio,
+        ))
+
+    # Run in thread to avoid blocking Skyler's event loop
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        try:
+            result = pool.submit(_run).result(timeout=600)  # 10 min timeout
+        except concurrent.futures.TimeoutError:
+            return "❌ Pipeline timed out after 10 minutes."
+        except Exception as e:
+            return f"❌ Pipeline error: {str(e)}"
+
+    if result.get("success"):
+        return (
+            f"✅ **Draft ready for your review!**\n\n"
+            f"📝 **{result['title']}**\n"
+            f"📊 {result['word_count']} words | "
+            f"Quality: {result.get('quality_score', 0):.0f}/10 | "
+            f"{result.get('urls_browsed', 0)} URLs researched\n\n"
+            f"👀 Notion draft: {result['draft_url']}\n\n"
+            f"Content ID: `{result['content_id'][:8]}`\n"
+            f"To publish: tell me `approve article {result['content_id'][:8]}`"
+        )
+    elif result.get("error") == "duplicate":
+        # Return the duplicate message directly — already formatted
+        return result.get("message", "⚠️ A pipeline entry for this topic already exists.")
+    else:
+        return f"❌ Pipeline failed: {result.get('error', 'Unknown error')}"
+
+
+def nexus_approve_and_publish(content_id_prefix: str) -> str:
+    """
+    Approve and publish a draft that's waiting for review.
+    Pass the content ID (or first 8 characters) shown when the draft was created.
+    This triggers audio generation, WordPress publishing, and LinkedIn posting.
+    """
+    import concurrent.futures
+
+    pipeline = get_pipeline()
+
+    # Support short ID prefix matching
+    full_id = content_id_prefix
+    if len(content_id_prefix) < 32:
+        matches = [
+            cid for cid in pipeline._pending_publishes
+            if cid.startswith(content_id_prefix) or cid.replace("-", "").startswith(content_id_prefix)
+        ]
+        if not matches:
+            return (
+                f"❌ No pending draft found with ID starting `{content_id_prefix}`.\n"
+                f"Use `show pending articles` to see what's waiting."
+            )
+        if len(matches) > 1:
+            return f"❌ Multiple matches for `{content_id_prefix}`. Please be more specific."
+        full_id = matches[0]
+
+    def _run():
+        return asyncio.run(pipeline.publish(full_id))
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        try:
+            result = pool.submit(_run).result(timeout=600)
+        except concurrent.futures.TimeoutError:
+            return "❌ Publishing timed out after 10 minutes."
+        except Exception as e:
+            return f"❌ Publish error: {str(e)}"
+
+    if result.get("success"):
+        lines = [f"🚀 **Published: _{result['title']}_**\n"]
+        if result.get("wordpress_url"):
+            lines.append(f"🌐 {result['wordpress_url']}")
+        if result.get("audio_files", 0) > 0:
+            lines.append(f"🎧 {result['audio_files']} audio file(s) embedded")
+        if result.get("linkedin_posted"):
+            lines.append("📱 LinkedIn: posted ✅")
+        return "\n".join(lines)
+    else:
+        return f"❌ Publish failed: {result.get('error', 'Unknown error')}"
+
+
+def nexus_pending_articles() -> str:
+    """Show all article drafts that are waiting for approval and publishing."""
+    pipeline = get_pipeline()
+    pending = pipeline.get_pending_reviews()
+
+    if not pending:
+        return "📭 No drafts waiting for review."
+
+    lines = [f"👀 **{len(pending)} draft(s) awaiting your review:**\n"]
+    for p in pending:
+        lines.append(
+            f"📝 **{p['title']}**\n"
+            f"   Topic: {p['topic']}\n"
+            f"   ID: `{p['content_id'][:8]}`\n"
+            f"   Queued: {p['stored_at'][:16]}\n"
+        )
+    lines.append("To publish: `approve article <id>`")
+    return "\n".join(lines)

@@ -1,0 +1,23 @@
+[project]
+name = "nexus"
+version = "2.0.0"
+description = "Nexus — Personal AI Operating System. Skyler bot + Notion + Article Pipeline."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Discord
+    "discord-py>=2.6.4",
+    # AI providers
+    "anthropic>=0.83.0",
+    "openai>=2.21.0",
+    # Notion
+    "aiohttp>=3.9.0",
+    # Utilities
+    "python-dotenv>=1.2.1",
+    "pytz>=2024.1",
+    "requests>=2.32.5",
+    # GitHub
+    "pygithub>=2.8.1",
+    # Web scraping
+    "beautifulsoup4>=4.14.3",
+]
