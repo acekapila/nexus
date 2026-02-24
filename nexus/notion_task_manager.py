@@ -211,6 +211,104 @@ class NotionTaskManager:
 
     # ── General Tasks ────────────────────────────────────────────────────────
 
+    async def append_blocks_to_page(
+        self,
+        page_id: str,
+        markdown_content: str,
+        section_heading: str = None,
+    ) -> bool:
+        """
+        Append new content blocks to an existing Notion page.
+        Uses PATCH /blocks/{page_id}/children (Notion append API).
+        Returns True on success.
+        """
+        blocks = []
+
+        # Add a divider + heading to visually separate the new section
+        blocks.append({"object": "block", "type": "divider", "divider": {}})
+
+        if section_heading:
+            blocks.append({
+                "object": "block", "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {
+                    "content": section_heading
+                }}]}
+            })
+
+        # Parse markdown into Notion blocks
+        for paragraph in markdown_content.split("\n\n"):
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            if paragraph.startswith("## "):
+                blocks.append({
+                    "object": "block", "type": "heading_2",
+                    "heading_2": {"rich_text": [{"type": "text", "text": {
+                        "content": paragraph[3:].strip()
+                    }}]}
+                })
+            elif paragraph.startswith("### "):
+                blocks.append({
+                    "object": "block", "type": "heading_3",
+                    "heading_3": {"rich_text": [{"type": "text", "text": {
+                        "content": paragraph[4:].strip()
+                    }}]}
+                })
+            elif paragraph.startswith("# "):
+                blocks.append({
+                    "object": "block", "type": "heading_1",
+                    "heading_1": {"rich_text": [{"type": "text", "text": {
+                        "content": paragraph[2:].strip()
+                    }}]}
+                })
+            elif paragraph.startswith("- ") or paragraph.startswith("* "):
+                # Bullet list
+                for line in paragraph.split("\n"):
+                    line = line.lstrip("- *").strip()
+                    if line:
+                        blocks.append({
+                            "object": "block", "type": "bulleted_list_item",
+                            "bulleted_list_item": {"rich_text": [{"type": "text", "text": {
+                                "content": line[:1900]
+                            }}]}
+                        })
+            else:
+                for i in range(0, len(paragraph), 1900):
+                    blocks.append({
+                        "object": "block", "type": "paragraph",
+                        "paragraph": {"rich_text": [{"type": "text", "text": {
+                            "content": paragraph[i:i+1900]
+                        }}]}
+                    })
+
+        # Notion allows max 100 blocks per request — batch if needed
+        page_id_clean = page_id.replace("-", "")
+        for i in range(0, len(blocks), 100):
+            batch = blocks[i:i+100]
+            result = await self.api.patch(
+                f"blocks/{page_id_clean}/children",
+                {"children": batch}
+            )
+            if result.get("object") == "error":
+                print(f"  ❌ append_blocks error: {result.get('message')}")
+                return False
+
+        print(f"  ✅ Appended {len(blocks)} blocks to page {page_id_clean[:8]}...")
+        return True
+
+    async def find_draft_page_id(self, content_item_id: str) -> Optional[str]:
+        """
+        Find the draft child page under a content item.
+        Returns the page_id of the first child page whose title starts with 'Draft:'.
+        """
+        result = await self.api.get(f"blocks/{content_item_id.replace('-', '')}/children")
+        for block in result.get("results", []):
+            if block.get("type") == "child_page":
+                title = block.get("child_page", {}).get("title", "")
+                if title.startswith("Draft:"):
+                    return block["id"]
+        return None
+
     async def find_general_task_by_title(self, task: str) -> Optional[Dict]:
         """
         Search for an existing general task by title (case-insensitive partial match).

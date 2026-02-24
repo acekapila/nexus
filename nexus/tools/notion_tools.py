@@ -449,6 +449,20 @@ def nexus_pending_articles() -> str:
         return f"❌ Nexus pipeline not available: {e}"
 
 
+def nexus_revise_article(content_id_prefix: str, instruction: str) -> str:
+    """
+    Add new content to an existing article draft in Notion.
+    Use when the user wants to expand, update, or add examples to a draft before publishing.
+    content_id_prefix: 8-char content ID shown when draft was created.
+    instruction: what to add — e.g. 'add recent AI attack examples with dates'.
+    """
+    try:
+        from nexus_pipeline import nexus_revise_article as _revise
+        return _revise(content_id_prefix, instruction)
+    except ImportError as e:
+        return f"❌ Nexus pipeline not available: {e}"
+
+
 # ── Task Router (Phase 5) ─────────────────────────────────────────────────────
 
 def route_task(task: str) -> str:

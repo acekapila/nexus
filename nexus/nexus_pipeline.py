@@ -710,6 +710,118 @@ def nexus_approve_and_publish(content_id_prefix: str) -> str:
         return f"❌ Publish failed: {result.get('error', 'Unknown error')}"
 
 
+def nexus_revise_article(
+    content_id_prefix: str,
+    instruction: str,
+) -> str:
+    """
+    Add new content to an existing article draft in Notion.
+    Use when the user wants to add examples, expand a section, or update the draft
+    before approving it for publishing.
+
+    content_id_prefix: the 8-char content ID shown when the draft was created
+    instruction: what to add — e.g. "add recent real-world AI attack examples with dates"
+    """
+    import anthropic
+    import concurrent.futures
+
+    pipeline = get_pipeline()
+
+    # Resolve full content_id from prefix
+    full_id = content_id_prefix
+    if len(content_id_prefix) < 32:
+        matches = [
+            cid for cid in pipeline._pending_publishes
+            if cid.startswith(content_id_prefix) or cid.replace("-", "").startswith(content_id_prefix)
+        ]
+        if matches:
+            full_id = matches[0]
+
+    def _run():
+        async def _async_run():
+            ntm = NotionTaskManager()
+            try:
+                # Find the article title from pending store or Notion
+                title = "this article"
+                pending = pipeline._pending_publishes.get(full_id, {})
+                if pending:
+                    title = pending.get("title", title)
+
+                # Find the draft child page under the content item
+                draft_page_id = await ntm.find_draft_page_id(full_id)
+                if not draft_page_id:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"No draft page found under content ID `{full_id[:8]}`. "
+                            f"Make sure this is the content item ID, not the draft page ID."
+                        )
+                    }
+
+                # Use Claude to generate the additional content
+                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                prompt = (
+                    f"You are helping revise a cybersecurity article titled '{title}'.\n\n"
+                    f"The user wants you to: {instruction}\n\n"
+                    f"Write ONLY the new content to add — do not rewrite the whole article. "
+                    f"Format it in clean markdown with ## headings and bullet points where appropriate. "
+                    f"Be specific, factual, and cite real incidents with dates where possible. "
+                    f"Max 600 words."
+                )
+                response = client.messages.create(
+                    model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
+                    max_tokens=1200,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                new_content = response.content[0].text.strip()
+                tokens_used = response.usage.input_tokens + response.usage.output_tokens
+
+                # Append to the draft page in Notion
+                success = await ntm.append_blocks_to_page(
+                    page_id=draft_page_id,
+                    markdown_content=new_content,
+                    section_heading=f"✏️ Added: {instruction[:80]}",
+                )
+
+                if not success:
+                    return {"success": False, "error": "Failed to append blocks to Notion draft page"}
+
+                draft_url = f"https://notion.so/{draft_page_id.replace('-', '')}"
+                return {
+                    "success": True,
+                    "draft_page_id": draft_page_id,
+                    "draft_url": draft_url,
+                    "new_content": new_content,
+                    "tokens_used": tokens_used,
+                }
+            finally:
+                await ntm.close()
+
+        return asyncio.run(_async_run())
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        try:
+            result = pool.submit(_run).result(timeout=120)
+        except concurrent.futures.TimeoutError:
+            return "❌ Revision timed out."
+        except Exception as e:
+            return f"❌ Revision error: {str(e)}"
+
+    if not result.get("success"):
+        return f"❌ {result.get('error', 'Unknown error')}"
+
+    preview = result["new_content"][:400]
+    if len(result["new_content"]) > 400:
+        preview += "..."
+
+    return (
+        f"✅ **Article draft updated!**\n\n"
+        f"Added to: {result['draft_url']}\n\n"
+        f"**Preview of what was added:**\n{preview}\n\n"
+        f"When you're happy with the full draft, say `approve article {full_id[:8]}` to publish."
+    )
+
+
 def nexus_pending_articles() -> str:
     """Show all article drafts that are waiting for approval and publishing."""
     pipeline = get_pipeline()

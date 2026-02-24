@@ -29,6 +29,7 @@ from tools.notion_tools import (
     nexus_write_article,
     nexus_approve_and_publish,
     nexus_pending_articles,
+    nexus_revise_article,
     route_task,
     cost_estimate,
     cost_summary_weekly,
@@ -106,6 +107,9 @@ CLAUDE_TRIGGERS = [
     "write podcast", "create podcast episode",
     "approve article", "publish article", "approve and publish",
     "pending articles", "drafts waiting",
+    "update the article", "update the draft", "revise the article", "revise the draft",
+    "add to the article", "add to the draft", "add examples", "add more examples",
+    "expand the article", "update draft", "edit the article", "edit the draft",
     # Notion / task management — these need reasoning, use Claude
     "add task", "add a task", "create task", "new task",
     "add to notion", "log task", "remind me",
@@ -433,6 +437,30 @@ TOOLS = [
         "description": "Show all article drafts waiting for Sumit's approval to publish.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "nexus_revise_article",
+        "description": (
+            "Add new content to an existing article draft in Notion before it is published. "
+            "Use when Sumit wants to update a draft — e.g. 'add more examples', 'expand the section on X', "
+            "'add recent real-world examples', 'include the 2024 Hong Kong deepfake case'. "
+            "This appends the new content to the existing Notion draft page — it does NOT rewrite the whole article. "
+            "Requires the content_id shown when the draft was created."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content_id_prefix": {
+                    "type": "string",
+                    "description": "The content ID or first 8 characters of it shown when the draft was created.",
+                },
+                "instruction": {
+                    "type": "string",
+                    "description": "What to add or change — e.g. 'add 3 real-world examples of AI-assisted attacks with dates and dollar amounts'.",
+                },
+            },
+            "required": ["content_id_prefix", "instruction"],
+        },
+    },
 
     # ── Task Router / Cost Intelligence ───────────────────────────────────────
     {
@@ -675,6 +703,7 @@ TOOL_MAP = {
     "nexus_write_article":        nexus_write_article,
     "nexus_approve_and_publish":  nexus_approve_and_publish,
     "nexus_pending_articles":     nexus_pending_articles,
+    "nexus_revise_article":       nexus_revise_article,
     # Task router
     "route_task":          route_task,
     "cost_estimate":       cost_estimate,
@@ -741,6 +770,7 @@ def describe_tool_call(name: str, inputs: dict) -> str:
         "nexus_write_article":       f"✍️ Starting article pipeline: _{i.get('topic', '')}_  _(this takes 5–10 min)_",
         "nexus_approve_and_publish": f"🚀 Publishing article `{str(i.get('content_id_prefix',''))[:8]}...`",
         "nexus_pending_articles":    "👀 Checking drafts awaiting review...",
+        "nexus_revise_article":      f"✏️ Updating draft `{str(i.get('content_id_prefix',''))[:8]}` — adding: _{i.get('instruction', '')[:60]}_...",
         # Task router
         "route_task":          f"🔀 Classifying task: _{i.get('task', '')}_",
         "cost_estimate":       f"💰 Estimating cost for: _{i.get('task', '')}_",
