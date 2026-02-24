@@ -3,7 +3,7 @@ name = "nexus"
 version = "2.0.0"
 description = "Nexus — Personal AI Operating System. Skyler bot + Notion + Article Pipeline."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     # Discord
     "discord-py>=2.6.4",
@@ -21,3 +21,6 @@ dependencies = [
     # Web scraping
     "beautifulsoup4>=4.14.3",
 ]
+
+[tool.uv]
+python-preference = "only-managed"
