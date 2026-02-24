@@ -1,0 +1,7 @@
+openai
+requests
+markdown
+aiohttp
+bs4
+dotenv
+elevenlabs

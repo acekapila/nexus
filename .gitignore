@@ -1,34 +1,43 @@
-# Secrets — never commit these
+# ── Secrets — never commit ─────────────────────────────
 .env
+notion_db_ids.json
 
-# Python cache
+# ── Python cache ───────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 
-# Backups
+# ── Virtual environments ───────────────────────────────
+.venv/
+venv/
+*.egg-info/
+
+# ── OS ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Backups ───────────────────────────────────────────
 *.bck
 *.bak
 backup/
 
-# uv/pip
-.venv/
-*.egg-info/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Generated audio/article output
+# ── Article Generator — generated output (do not commit) ──
 ai-article-generator/audio_output/
-ai-article-generator/generated_articles/
+ai-article-generator/podcast_output/
+ai-article-generator/podcast_scripts/
 ai-article-generator/clean_podcast_scripts/
-ai-article-generator/notion_db_ids.json
+ai-article-generator/generated_articles/
+ai-article-generator/research_data/
+ai-article-generator/research_data_with_sources/
+ai-article-generator/unused/
 
-# Notion token files
-notion_db_ids.json
+# ── Article Generator — binary/large files ────────────
+*.mp3
+*.wav
+*.mp4
 
-# Test/debug scripts (optional — remove if you want these tracked)
-ai-article-generator/notion-test-script.py
+# ── Nexus runtime output ───────────────────────────────
+nexus/__pycache__/
+nexus/tools/__pycache__/
