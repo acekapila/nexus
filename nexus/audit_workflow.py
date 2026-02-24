@@ -93,6 +93,81 @@ TEMPLATES = {
         ],
     },
 
+    # ── AI-Assisted / Emerging Threats ────────────────────────────────────────
+    "ai_companion_attack": {
+        "name":             "AI-Assisted Cyberattack (AI as Companion Tool)",
+        "area":             "cyber",
+        "risk":             "critical",
+        "memo_required":    True,
+        "notes":            (
+            "Adversaries are using AI tools (LLMs, generative AI, AI-powered exploit frameworks) "
+            "as companion tools to accelerate and scale attacks. Real-world examples include: "
+            "WormGPT/FraudGPT used for convincing phishing at scale; AI-generated deepfake audio/video "
+            "used in CEO fraud (e.g. $25M Hong Kong deepfake CFO call, 2024); "
+            "AI-assisted vulnerability discovery and exploit writing (e.g. GPT-4 autonomously "
+            "exploiting 1-day CVEs, University of Illinois 2024); "
+            "AI-powered OSINT aggregation for spear-phishing personalisation; "
+            "Automated social engineering via AI chatbots impersonating IT helpdesks; "
+            "Nation-state actors (Fancy Bear, Lazarus Group) using LLMs for translation, "
+            "scripting, and C2 command generation (Microsoft/OpenAI Threat Intelligence, Feb 2024). "
+            "Review whether current controls adequately detect and respond to AI-accelerated threats."
+        ),
+        "verification_steps": [
+            "Review email gateway and phishing simulation results — assess if AI-generated phishing (highly personalised, no grammar errors) is being caught",
+            "Confirm deepfake/voice fraud controls exist for high-value wire transfer and financial approval processes (callback verification, dual authorisation)",
+            "Check if threat intelligence feeds include AI-assisted TTPs (e.g. MITRE ATLAS, OpenAI/Microsoft threat reports)",
+            "Verify security awareness training covers AI-assisted social engineering — not just traditional phishing",
+            "Review whether automated vulnerability scanning cadence is sufficient given AI-accelerated exploit development timelines",
+            "Confirm SOC/SIEM rules are tuned for AI-characteristic attack patterns (e.g. high-volume, highly-varied spear-phishing; rapid exploit attempts post-CVE disclosure)",
+            "Assess whether AI tools used internally (Copilot, ChatGPT) have data loss prevention controls to prevent inadvertent data exfiltration via prompts",
+        ],
+    },
+    "ai_phishing_campaign": {
+        "name":             "AI-Generated Phishing / Social Engineering Campaign",
+        "area":             "cyber",
+        "risk":             "high",
+        "memo_required":    True,
+        "notes":            (
+            "AI tools enable attackers to generate highly personalised, grammatically perfect "
+            "phishing emails at scale with minimal effort. WormGPT and FraudGPT (jailbroken LLMs) "
+            "are commercially available on dark web markets. Observed campaigns include: "
+            "AI-crafted spear-phishing targeting executives using scraped LinkedIn/social data; "
+            "AI voice cloning for vishing attacks impersonating known contacts; "
+            "Automated multi-stage phishing with contextually aware AI responses to victim replies."
+        ),
+        "verification_steps": [
+            "Run AI-generated phishing simulation — confirm detection rate vs traditional phishing baseline",
+            "Verify email security gateway has behavioural analysis (not just signature-based) to catch novel AI-crafted emails",
+            "Confirm staff training explicitly covers AI phishing characteristics (perfect grammar, hyper-personalisation, urgency)",
+            "Review incident response playbook — confirm AI-assisted phishing is a documented scenario",
+            "Check whether voice/vishing controls exist for sensitive requests made by phone",
+            "Confirm DMARC, DKIM, SPF are enforced to reduce spoofing surface",
+        ],
+    },
+    "ai_deepfake_fraud": {
+        "name":             "Deepfake / Synthetic Identity Fraud",
+        "area":             "cyber",
+        "risk":             "critical",
+        "memo_required":    True,
+        "notes":            (
+            "AI-generated deepfake audio and video are being used to impersonate executives and "
+            "authorise fraudulent transactions. Key incidents: $25M USD loss — Hong Kong finance "
+            "worker tricked by deepfake video call of CFO (Feb 2024); Multiple cases of AI voice "
+            "cloning used to authorise wire transfers by impersonating CEOs. "
+            "Deepfake tools (ElevenLabs, HeyGen, open-source models) are freely accessible. "
+            "Risk is highest in organisations relying on verbal/video authorisation for financial "
+            "transactions or access provisioning."
+        ),
+        "verification_steps": [
+            "Confirm financial transaction approval policy requires out-of-band verification (call back on known number) — not solely reliance on video/voice call",
+            "Verify dual-authorisation controls exist for wire transfers above defined thresholds",
+            "Assess whether identity verification for remote onboarding includes liveness detection",
+            "Confirm executive team is aware of deepfake fraud risk and has a verbal code word or challenge protocol",
+            "Review whether cyber insurance policy covers deepfake-facilitated fraud losses",
+            "Check if any recent wire transfer requests were initiated via video call — review for anomalies",
+        ],
+    },
+
     # ── Compliance ─────────────────────────────────────────────────────────────
     "policy_gap": {
         "name":             "Missing or Outdated Policy",
@@ -653,7 +728,8 @@ def audit_create_from_template(
     Create an audit issue in Notion using a pre-built template.
     Available templates: mfa_bypass, unpatched_system, privileged_access,
     data_exposure, policy_gap, training_gap, third_party_risk,
-    change_management, backup_failure, logging_gap
+    change_management, backup_failure, logging_gap,
+    ai_companion_attack, ai_phishing_campaign, ai_deepfake_fraud
     """
     result = _run_async(_workflow.create_from_template(
         template_key, override_name, override_risk,
