@@ -55,13 +55,29 @@ class EnhancedURLBrowser:
         
         # Reliable domains for content extraction
         self.reliable_domains = {
-            'medium.com', 'towardsdatascience.com', 'hackernoon.com', 
+            # General tech & news
+            'medium.com', 'towardsdatascience.com', 'hackernoon.com',
             'techcrunch.com', 'wired.com', 'arstechnica.com', 'zdnet.com',
             'cnn.com', 'bbc.com', 'reuters.com', 'bloomberg.com',
             'forbes.com', 'businessinsider.com', 'nature.com', 'science.org',
+            'theregister.com',
+            # Fraud / fintech
             'keepnetlabs.com', 'knowbe4.com', 'techmagic.co', 'securelist.com',
             'fraud.com', 'alloy.com', 'arthurstatebank.com', 'acfe.com',
-            'veriff.com', 'seon.io', 'pindrop.com'
+            'veriff.com', 'seon.io', 'pindrop.com',
+            # Cybersecurity news — primary sources
+            'thehackernews.com', 'bleepingcomputer.com', 'darkreading.com',
+            'seceon.com', 'krebsonsecurity.com', 'threatpost.com',
+            'cyberscoop.com', 'securityweek.com', 'infosecurity-magazine.com',
+            'helpnetsecurity.com', 'recordedfuture.com',
+            # Threat intelligence & vendor research
+            'crowdstrike.com', 'mandiant.com', 'unit42.paloaltonetworks.com',
+            'research.checkpoint.com', 'sentinelone.com', 'trellix.com',
+            'rapid7.com', 'portswigger.net', 'sans.org',
+            # Government & standards bodies
+            'attack.mitre.org', 'cisa.gov', 'nvd.nist.gov', 'cert.gov.au',
+            # Microsoft security blog (major threat actor disclosures)
+            'microsoft.com',
         }
     
     async def __aenter__(self):
@@ -259,6 +275,22 @@ class EnhancedURLBrowser:
                         print(f"   SUCCESS: {content.word_count} words extracted using {content.extraction_method}")
                     else:
                         print(f"   FAILED: {content.error_message}")
+                        # Fallback: use Perplexity's own snippet when scraping is blocked (e.g. Cloudflare/403)
+                        snippet = url_data.get('snippet', '')
+                        if snippet and len(snippet.split()) > 20:
+                            fallback = BrowsedContent(
+                                url=url,
+                                title=url_data.get('title', ''),
+                                content=snippet,
+                                word_count=len(snippet.split()),
+                                author='',
+                                publish_date='',
+                                extraction_method='perplexity_snippet_fallback',
+                                success=True,
+                                error_message=''
+                            )
+                            browsed_contents.append(fallback)
+                            print(f"   ⚡ Using Perplexity snippet fallback for: {url[:60]} ({fallback.word_count} words)")
                 
                 except Exception as e:
                     print(f"   EXCEPTION: {str(e)}")
@@ -796,7 +828,7 @@ class EnhancedPerplexityWebResearcher:
             analysis_prompt = f"""Analyze this article content about "{topic}" and extract insights.{context_instruction}
 
 ARTICLE CONTENT:
-{content.content[:4000]}
+{content.content[:8000]}
 
 Provide analysis in JSON format:
 {{
