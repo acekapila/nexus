@@ -16,16 +16,17 @@ except ImportError:
     print("⚠️  python-dotenv not found, using system environment variables")
 
 import openai
+import anthropic
 
 class AIArticleGenerator:
     """AI article generator with web research and readability optimization"""
-    
-    def __init__(self, api_key: str = None, model: str = "gpt-4o-mini"):
-        self.api_key = api_key or os.getenv('OPENAI_API_KEY')
+
+    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-6"):
+        self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
         if not self.api_key:
-            raise ValueError("OpenAI API key required. Set OPENAI_API_KEY environment variable or pass api_key parameter.")
-        
-        self.client = openai.OpenAI(api_key=self.api_key)
+            raise ValueError("Anthropic API key required. Set ANTHROPIC_API_KEY environment variable or pass api_key parameter.")
+
+        self.client = anthropic.Anthropic(api_key=self.api_key)
         self.model = model
         
         # Web research settings
@@ -33,23 +34,20 @@ class AIArticleGenerator:
         self.max_research_articles = 5
         
     async def call_openai(self, prompt: str, system_prompt: str = None, temperature: float = 0.7) -> str:
-        """Make OpenAI API call with error handling"""
-        messages = []
-        
+        """Make Anthropic API call with error handling"""
+        kwargs = {
+            "model": self.model,
+            "max_tokens": 2500,
+            "messages": [{"role": "user", "content": prompt}],
+        }
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        
+            kwargs["system"] = system_prompt
+
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=2500
-            )
-            return response.choices[0].message.content.strip()
+            response = self.client.messages.create(**kwargs)
+            return response.content[0].text.strip()
         except Exception as e:
-            print(f"❌ OpenAI API Error: {e}")
+            print(f"❌ Anthropic API Error: {e}")
             raise
     
     def parse_json_response(self, response: str, fallback: Dict = None) -> Dict:
@@ -897,7 +895,7 @@ def interactive_article_generator():
     
     print("\n" + "="*60)
     print("🤖 AI Article Generator")
-    print("   Powered by OpenAI GPT")
+    print("   Powered by Anthropic Claude Sonnet 4.6")
     print("   📖 With Readability Optimization")
     print("   🌐 With Web Research for Originality")
     print("="*60)
@@ -1037,7 +1035,7 @@ async def main():
         
     except ValueError as e:
         print(f"❌ Configuration Error: {e}")
-        print("💡 Make sure to set OPENAI_API_KEY in your .env file")
+        print("💡 Make sure to set ANTHROPIC_API_KEY in your .env file")
     except Exception as e:
         print(f"❌ Generation Error: {e}")
 

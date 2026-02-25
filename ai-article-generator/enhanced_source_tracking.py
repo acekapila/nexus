@@ -4,6 +4,7 @@ import re
 import json
 import asyncio
 import openai
+import anthropic
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
@@ -30,9 +31,9 @@ class SourcedClaim:
     
 class EnhancedSourceTracker:
     """Track and validate sources for all claims, statistics, and insights"""
-    
+
     def __init__(self):
-        self.openai_client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.anthropic_client = anthropic.AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.tracked_claims = []
         self.source_reliability_scores = {}
         
@@ -111,14 +112,13 @@ REQUIREMENTS:
 Extract the sourced claims:"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": extraction_prompt}],
                 max_tokens=2000,
-                temperature=0.1
             )
-            
-            result_text = response.choices[0].message.content.strip()
+
+            result_text = response.content[0].text.strip()
             
             # Clean JSON
             if result_text.startswith('```json'):
@@ -339,14 +339,13 @@ CRITICAL REQUIREMENTS:
 - Highlight any potential conflicts or gaps in sourcing"""
 
         try:
-            response = await self.source_tracker.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.source_tracker.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": synthesis_prompt}],
                 max_tokens=2000,
-                temperature=0.2
             )
-            
-            synthesis_text = response.choices[0].message.content.strip()
+
+            synthesis_text = response.content[0].text.strip()
             
             if synthesis_text.startswith('```json'):
                 synthesis_text = synthesis_text.replace('```json', '').replace('```', '').strip()
@@ -466,9 +465,9 @@ CRITICAL REQUIREMENTS:
 # Enhanced Article Generator with Source Attribution
 class SourceAttributedArticleGenerator:
     """Article generator that properly attributes all claims to sources"""
-    
+
     def __init__(self):
-        self.openai_client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.anthropic_client = anthropic.AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
     
     async def generate_article_with_proper_attribution(self, topic: str, research_data: Dict, 
                                                      audience: str = None, article_type: str = "how-to") -> Dict:
@@ -645,16 +644,15 @@ CRITICAL INSTRUCTIONS:
 Write the article content with proper source attribution:"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": content_prompt}],
                 max_tokens=5000,
-                temperature=0.7
             )
-            
-            content = response.choices[0].message.content.strip()
+
+            content = response.content[0].text.strip()
             return content
-            
+
         except Exception as e:
             print(f"   ❌ Content generation with attribution failed: {str(e)}")
             return None
@@ -677,14 +675,13 @@ TITLE REQUIREMENTS:
 Generate ONE perfect title:"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": title_prompt}],
                 max_tokens=100,
-                temperature=0.4
             )
-            
-            title = response.choices[0].message.content.strip().replace('"', '').replace("'", "")
+
+            title = response.content[0].text.strip().replace('"', '').replace("'", "")
             return title
             
         except Exception as e:
@@ -708,14 +705,13 @@ META DESCRIPTION REQUIREMENTS:
 Create the meta description:"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": meta_prompt}],
                 max_tokens=100,
-                temperature=0.4
             )
-            
-            return response.choices[0].message.content.strip().replace('"', '')
+
+            return response.content[0].text.strip().replace('"', '')
             
         except Exception as e:
             return "Evidence-based insights with proper source attribution and expert research."

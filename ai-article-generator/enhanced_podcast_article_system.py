@@ -4,6 +4,7 @@ import json
 import requests
 import asyncio
 import openai
+import anthropic
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -34,9 +35,9 @@ from personal_social_media_poster import EnhancedLinkedInPoster
 # Keep your existing quality control classes
 class ArticleQualityAgent:
     """Agent responsible for improving article quality, readability, and structure"""
-    
+
     def __init__(self):
-        self.openai_client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.anthropic_client = anthropic.AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
     
     async def improve_readability(self, article_content: str, topic: str) -> Dict:
         """Improve article readability and flow"""
@@ -72,14 +73,13 @@ REQUIREMENTS:
 Rewrite the entire article content with improved readability:"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": readability_prompt}],
                 max_tokens=4000,
-                temperature=0.3
             )
-            
-            improved_content = response.choices[0].message.content.strip()
+
+            improved_content = response.content[0].text.strip()
             
             return {
                 "success": True,
@@ -133,14 +133,13 @@ RETURN A JSON RESPONSE WITH:
 Analyze thoroughly and provide detailed feedback:"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": quality_check_prompt}],
                 max_tokens=2000,
-                temperature=0.1
             )
-            
-            quality_analysis = response.choices[0].message.content.strip()
+
+            quality_analysis = response.content[0].text.strip()
             
             # Clean up the response
             if quality_analysis.startswith('```json'):
@@ -223,14 +222,13 @@ ORIGINAL CONTENT:
 Return the COMPLETE corrected content with all issues fixed (no title):"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": fix_prompt}],
                 max_tokens=4000,
-                temperature=0.2
             )
-            
-            fixed_content = response.choices[0].message.content.strip()
+
+            fixed_content = response.content[0].text.strip()
             
             return {
                 "success": True,
@@ -250,9 +248,10 @@ Return the COMPLETE corrected content with all issues fixed (no title):"""
 # Enhanced Article Generator with integrated LinkedIn posting methods
 class EnhancedArticleGeneratorWithLinkedInIntegration:
     """Enhanced article generator with integrated clean LinkedIn posting"""
-    
+
     def __init__(self):
-        self.openai_client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.anthropic_client = anthropic.AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+        self.openai_client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))  # for social media posting
         self.quality_agent = ArticleQualityAgent()
         self.source_attributed_generator = SourceAttributedArticleGenerator()
         self.linkedin_poster = EnhancedLinkedInPoster()
@@ -435,14 +434,13 @@ CRITICAL INSTRUCTIONS:
 Write the complete article content (no title, just content):"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": content_prompt}],
                 max_tokens=4000,
-                temperature=0.7
             )
-            
-            content = response.choices[0].message.content.strip()
+
+            content = response.content[0].text.strip()
             
             # Clean any potential title remnants and validate content
             content = self._clean_content_only(content)
@@ -500,17 +498,16 @@ TITLE REQUIREMENTS:
 Based on the actual content, create ONE perfect title:"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": title_prompt}],
                 max_tokens=100,
-                temperature=0.4
             )
-            
-            title = response.choices[0].message.content.strip()
+
+            title = response.content[0].text.strip()
             # Clean any quotes or extra formatting
             title = title.replace('"', '').replace("'", "").strip()
-            
+
             return title
             
         except Exception as e:
@@ -535,14 +532,13 @@ META DESCRIPTION REQUIREMENTS:
 Create the meta description:"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": meta_prompt}],
                 max_tokens=100,
-                temperature=0.4
             )
-            
-            return response.choices[0].message.content.strip().replace('"', '')
+
+            return response.content[0].text.strip().replace('"', '')
             
         except Exception as e:
             return "Comprehensive guide with expert insights and practical advice."
@@ -595,14 +591,13 @@ Extract the main sections and create a JSON outline:
 }}"""
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": outline_prompt}],
                 max_tokens=1000,
-                temperature=0.2
             )
-            
-            outline_text = response.choices[0].message.content.strip()
+
+            outline_text = response.content[0].text.strip()
             
             # Clean up markdown formatting
             if outline_text.startswith('```json'):
