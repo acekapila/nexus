@@ -53,7 +53,7 @@
 | `write_file` | Write content to a local file |
 | `list_files` | List files in a directory |
 
-**Config files location:** `/home/ubuntu/nexus/`
+**Config files location:** `/home/azureuser/nexus/`
 
 ---
 

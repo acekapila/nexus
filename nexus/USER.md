@@ -21,7 +21,7 @@
 - Preferred editor: VS Code
 
 ## Skyler Deployment
-- Skyler lives at: `/home/ubuntu/nexus/` (Ubuntu VPS on Azure)
+- Skyler lives at: `/home/azureuser/nexus/` (Azure VPS)
 - Run command: `uv run main.py`
 - Keep-alive: screen session or systemd (screen -S nexus)
 

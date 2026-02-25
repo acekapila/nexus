@@ -60,7 +60,7 @@ def _setup_article_generator_path():
     if ag_str not in sys.path:
         sys.path.insert(0, ag_str)
     # Only inject the article generator's own venv site-packages when the path
-    # is absolute (VPS deployments always use absolute paths like /home/ubuntu/...).
+    # is absolute (VPS deployments always use absolute paths like /home/azureuser/...).
     # Relative paths mean local dev — skip venv injection to avoid dep conflicts.
     if Path(ARTICLE_GENERATOR_PATH).is_absolute():
         for _venv in [ag_path / ".venv", ag_path / "venv"]:
@@ -763,45 +763,108 @@ def nexus_write_article(
 def nexus_approve_and_publish(content_id_prefix: str) -> str:
     """
     Approve and publish a draft that's waiting for review.
-    Pass the content ID (or first 8 characters) shown when the draft was created.
+    Accepts either:
+      - A content ID or first 8 characters (e.g. "3122d6f2")
+      - An article title or partial title (e.g. "APT28 Shifts Tactics")
     This triggers audio generation, WordPress publishing, and LinkedIn posting.
     """
     import concurrent.futures
 
     pipeline = get_pipeline()
 
-    # Support short ID prefix matching — check memory first, then fall back to Notion
-    full_id = content_id_prefix
-    if len(content_id_prefix) < 32:
-        matches = [
+    def _do_reload():
+        """Re-hydrate pending queue from Notion (handles bot-restart scenario)."""
+        def _reload():
+            asyncio.run(pipeline._reload_pending_from_notion())
+        with concurrent.futures.ThreadPoolExecutor() as pool_reload:
+            try:
+                pool_reload.submit(_reload).result(timeout=30)
+            except Exception:
+                pass
+
+    def _uuid_matches(query: str) -> list:
+        """Find content IDs whose UUID prefix matches query."""
+        return [
             cid for cid in pipeline._pending_publishes
-            if cid.startswith(content_id_prefix) or cid.replace("-", "").startswith(content_id_prefix)
+            if cid.startswith(query) or cid.replace("-", "").startswith(query)
         ]
+
+    def _title_matches(query: str) -> list:
+        """Find content IDs whose title or topic contains query (case-insensitive)."""
+        q = query.lower()
+        return [
+            cid for cid, data in pipeline._pending_publishes.items()
+            if q in data.get("title", "").lower()
+            or q in data.get("topic", "").lower()
+        ]
+
+    def _pick_best(matches: list, query: str):
+        """
+        Given a list of matching IDs, try to narrow to 1.
+        Returns (full_id, error_msg) — exactly one will be None.
+        """
+        if len(matches) == 1:
+            return matches[0], None
+
+        # Multiple UUID matches: try title disambiguation with the original query
+        q = query.lower()
+        narrowed = [
+            cid for cid in matches
+            if q in pipeline._pending_publishes[cid].get("title", "").lower()
+            or q in pipeline._pending_publishes[cid].get("topic", "").lower()
+        ]
+        if len(narrowed) == 1:
+            return narrowed[0], None
+
+        # Still ambiguous — show the user what's available
+        options = "\n".join(
+            f"  • `{cid.replace('-', '')[:8]}` — {pipeline._pending_publishes[cid]['title']}"
+            for cid in matches
+        )
+        return None, (
+            f"❌ Multiple drafts match `{query}`:\n{options}\n"
+            f"Please use the exact 8-char ID from the list above."
+        )
+
+    # ── Step 1: UUID prefix match in memory ──────────────────────────────────
+    full_id = content_id_prefix
+    is_likely_uuid = len(content_id_prefix) <= 36 and " " not in content_id_prefix
+
+    if is_likely_uuid and len(content_id_prefix) < 32:
+        matches = _uuid_matches(content_id_prefix)
+        if matches:
+            full_id, err = _pick_best(matches, content_id_prefix)
+            if err:
+                return err
+        else:
+            # ── Step 2: UUID not in memory — reload from Notion and retry ────
+            _do_reload()
+            matches = _uuid_matches(content_id_prefix)
+            if matches:
+                full_id, err = _pick_best(matches, content_id_prefix)
+                if err:
+                    return err
+            else:
+                # UUID not found even after reload — fall through to title search
+                is_likely_uuid = False
+
+    # ── Step 3: Title-based search in memory (if not a UUID or UUID not found) ─
+    if not is_likely_uuid or full_id == content_id_prefix:
+        matches = _title_matches(content_id_prefix)
         if not matches:
-            # Not in memory — try to reload from Notion (handles bot-restart scenario)
-            def _reload():
-                asyncio.run(pipeline._reload_pending_from_notion())
-
-            with concurrent.futures.ThreadPoolExecutor() as pool_reload:
-                try:
-                    pool_reload.submit(_reload).result(timeout=30)
-                except Exception:
-                    pass
-
-            matches = [
-                cid for cid in pipeline._pending_publishes
-                if cid.startswith(content_id_prefix) or cid.replace("-", "").startswith(content_id_prefix)
-            ]
-
-        if not matches:
+            # Reload from Notion and retry title search
+            _do_reload()
+            matches = _title_matches(content_id_prefix)
+        if matches:
+            full_id, err = _pick_best(matches, content_id_prefix)
+            if err:
+                return err
+        else:
             return (
-                f"❌ No pending draft found with ID starting `{content_id_prefix}`.\n"
-                f"The article may have already been published, or was not found in Notion.\n"
+                f"❌ No pending draft found matching `{content_id_prefix}`.\n"
+                f"Tried UUID prefix match and title search — nothing found in memory or Notion.\n"
                 f"Use `show pending articles` to see what's waiting."
             )
-        if len(matches) > 1:
-            return f"❌ Multiple matches for `{content_id_prefix}`. Please be more specific."
-        full_id = matches[0]
 
     def _run():
         return asyncio.run(pipeline.publish(full_id))
