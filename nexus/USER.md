@@ -21,8 +21,10 @@
 - Preferred editor: VS Code
 
 ## Skyler Deployment
-- Skyler lives at: `/home/azureuser/nexus/` (Azure VPS)
-- Run command: `uv run main.py`
+- Repo root: `/home/azureuser/nexus/`
+- Skyler bot code (main.py, agent.py, .env, .md files): `/home/azureuser/nexus/nexus/`
+- Article generator: `/home/azureuser/nexus/ai-article-generator/`
+- Run command (from `/home/azureuser/nexus/nexus/`): `uv run main.py`
 - Keep-alive: screen session or systemd (screen -S nexus)
 
 ## Active Learning
