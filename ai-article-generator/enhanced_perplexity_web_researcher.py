@@ -545,25 +545,71 @@ class EnhancedURLBrowser:
         return ""
     
     def _extract_publish_date(self, soup: BeautifulSoup) -> str:
-        """Extract publish date"""
+        """Extract publish date from HTML metadata (fast path)."""
+        # 1. <time datetime="...">
         time_elem = soup.find('time')
         if time_elem and time_elem.get('datetime'):
             return time_elem['datetime']
-        
-        date_metas = soup.find_all('meta', attrs={'name': re.compile(r'date|time', re.I)})
-        for meta in date_metas:
-            if meta.get('content'):
-                return meta['content']
-        
-        date_selectors = ['.publish-date', '.post-date', '.article-date', '.date']
+
+        # 2. <meta name="*date*" content="...">  and OG / schema variants
+        for attr in [{'name': re.compile(r'date|time', re.I)},
+                     {'property': re.compile(r'article:published|og:updated', re.I)},
+                     {'itemprop': re.compile(r'datePublished|dateModified', re.I)}]:
+            for meta in soup.find_all('meta', attrs=attr):
+                if meta.get('content'):
+                    return meta['content']
+
+        # 3. JSON-LD structured data
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string or '{}')
+                for key in ('datePublished', 'dateModified', 'dateCreated'):
+                    if data.get(key):
+                        return data[key]
+            except Exception:
+                pass
+
+        # 4. Common CSS selectors
+        date_selectors = ['.publish-date', '.post-date', '.article-date', '.date',
+                          '.entry-date', '.byline time', '[class*="publish"]']
         for selector in date_selectors:
             element = soup.select_one(selector)
             if element:
-                text = element.get_text(strip=True)
+                text = element.get('datetime') or element.get_text(strip=True)
                 if text and len(text) < 50:
                     return text
-        
+
         return ""
+
+    def _parse_date_string(self, date_str: str) -> Optional[datetime]:
+        """Parse a date string into a datetime object. Returns None if unparseable."""
+        if not date_str:
+            return None
+        # Strip timezone info for simple parsing
+        date_str = re.sub(r'[TZ].*', '', date_str.strip()).strip()
+        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%B %d, %Y',
+                    '%b %d, %Y', '%d %B %Y', '%d %b %Y', '%Y'):
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _is_content_fresh(self, publish_date_str: str, max_age_months: int = 12) -> bool:
+        """Return True if content is within max_age_months, or if date is unknown."""
+        parsed = self._parse_date_string(publish_date_str)
+        if parsed is None:
+            return True  # Unknown date — allow through, prompt guard will catch stale stats
+        cutoff = datetime.now() - timedelta(days=max_age_months * 30)
+        return parsed >= cutoff
+
+    def _get_content_age_label(self, publish_date_str: str) -> str:
+        """Return human-readable freshness label for logging."""
+        parsed = self._parse_date_string(publish_date_str)
+        if parsed is None:
+            return "unknown date"
+        months_old = (datetime.now() - parsed).days // 30
+        return f"{months_old} months old ({publish_date_str[:10]})"
     
     def _clean_extracted_content(self, content: str) -> str:
         """Clean extracted content"""
@@ -735,7 +781,17 @@ class EnhancedPerplexityWebResearcher:
             if content.word_count < 20:  # Very low threshold
                 continue
 
-            logger.info(f"Analyzing content from {content.url[:50]}...")
+            # Freshness check — warn and skip stale content (>12 months old)
+            if not self._is_content_fresh(content.publish_date, max_age_months=12):
+                age_label = self._get_content_age_label(content.publish_date)
+                logger.warning(f"   ⚠️  Skipping stale content ({age_label}): {content.url[:70]}")
+                continue
+
+            if content.publish_date:
+                age_label = self._get_content_age_label(content.publish_date)
+                logger.info(f"   ✅ Fresh content ({age_label}): {content.url[:50]}...")
+            else:
+                logger.info(f"Analyzing content from {content.url[:50]}...")
 
             analysis_prompt = f"""Analyze this article content about "{topic}" and extract insights.{context_instruction}
 

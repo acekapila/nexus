@@ -421,6 +421,13 @@ STRUCTURE FORMAT:
 6. ## [Challenge-focused heading about obstacles/limitations]
 7. ## Conclusion
 
+DATA FRESHNESS REQUIREMENTS (current year is {datetime.now().year}):
+- ONLY use statistics, reports and findings that are from {datetime.now().year - 1} or later
+- If a statistic is from more than 12 months ago, mark it as [HISTORICAL DATA] and note it may be outdated
+- NEVER present old data as current — do not write "in 2023" or anchor to years more than 12 months ago
+- Prefer phrasing like "as of {datetime.now().year}" or "recent studies show" for current data
+- If all available data on a point is older than 12 months, acknowledge: "While older data from [year] suggests X, more recent figures may differ"
+
 CRITICAL INSTRUCTIONS:
 - Do NOT include any title or main heading
 - Start immediately with introduction content
