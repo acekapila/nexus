@@ -163,6 +163,51 @@ class NexusPipeline:
                 )
         return self._article_system
 
+    async def _reload_pending_from_notion(self) -> int:
+        """
+        Re-hydrate _pending_publishes from Notion after a bot restart.
+        Queries all content items at '👀 Your Review' status and rebuilds
+        the in-memory dict so that nexus_approve_and_publish() works without
+        needing to re-run the full pipeline.
+
+        Returns the number of items loaded.
+        """
+        ntm = NotionTaskManager()
+        loaded = 0
+        try:
+            items = await ntm.get_content_items_in_review()
+            for item in items:
+                content_id = item["id"]
+                # Skip items already in memory (don't overwrite fresh data)
+                if content_id in self._pending_publishes:
+                    continue
+                draft_data = await ntm.get_draft_page_content(content_id)
+                article_result = {
+                    "article_title":   item["title"],
+                    "article_content": draft_data["article_content"],
+                    "meta_description": draft_data["meta_description"],
+                    "topic":           item["topic"],
+                    # Mark as reloaded so downstream code knows content came from Notion
+                    "_reloaded_from_notion": True,
+                }
+                self._pending_publishes[content_id] = {
+                    "article_result": article_result,
+                    "podcast_script": draft_data["podcast_script"],
+                    "generate_audio": True,
+                    "topic":          item["topic"],
+                    "title":          item["title"],
+                    "stored_at":      item.get("last_edited", datetime.now().isoformat()),
+                }
+                loaded += 1
+                print(f"  🔄 Reloaded from Notion: '{item['title']}' ({content_id[:8]})")
+        except Exception as e:
+            print(f"  ⚠️  _reload_pending_from_notion error: {e}")
+        finally:
+            await ntm.close()
+        if loaded:
+            print(f"✅ Reloaded {loaded} pending article(s) from Notion into memory")
+        return loaded
+
     async def run(
         self,
         topic: str,
@@ -622,11 +667,25 @@ def init_pipeline(discord_notify_callback=None):
     """
     Initialise the global pipeline instance.
     Call this from main.py on_ready() passing Skyler's send function.
+    Also re-hydrates _pending_publishes from Notion so that articles pending
+    review survive bot restarts.
     """
     global _pipeline, _discord_cb
     _discord_cb = discord_notify_callback
     _pipeline = NexusPipeline(discord_notify_cb=discord_notify_callback)
     print("✅ Nexus pipeline initialised")
+
+    # Re-hydrate pending queue from Notion in the background
+    import concurrent.futures
+
+    def _reload():
+        asyncio.run(_pipeline._reload_pending_from_notion())
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        try:
+            pool.submit(_reload).result(timeout=30)
+        except Exception as e:
+            print(f"  ⚠️  Startup Notion reload failed (non-fatal): {e}")
 
 
 def get_pipeline() -> NexusPipeline:
@@ -711,7 +770,7 @@ def nexus_approve_and_publish(content_id_prefix: str) -> str:
 
     pipeline = get_pipeline()
 
-    # Support short ID prefix matching
+    # Support short ID prefix matching — check memory first, then fall back to Notion
     full_id = content_id_prefix
     if len(content_id_prefix) < 32:
         matches = [
@@ -719,8 +778,25 @@ def nexus_approve_and_publish(content_id_prefix: str) -> str:
             if cid.startswith(content_id_prefix) or cid.replace("-", "").startswith(content_id_prefix)
         ]
         if not matches:
+            # Not in memory — try to reload from Notion (handles bot-restart scenario)
+            def _reload():
+                asyncio.run(pipeline._reload_pending_from_notion())
+
+            with concurrent.futures.ThreadPoolExecutor() as pool_reload:
+                try:
+                    pool_reload.submit(_reload).result(timeout=30)
+                except Exception:
+                    pass
+
+            matches = [
+                cid for cid in pipeline._pending_publishes
+                if cid.startswith(content_id_prefix) or cid.replace("-", "").startswith(content_id_prefix)
+            ]
+
+        if not matches:
             return (
                 f"❌ No pending draft found with ID starting `{content_id_prefix}`.\n"
+                f"The article may have already been published, or was not found in Notion.\n"
                 f"Use `show pending articles` to see what's waiting."
             )
         if len(matches) > 1:
@@ -865,7 +941,20 @@ def nexus_revise_article(
 
 def nexus_pending_articles() -> str:
     """Show all article drafts that are waiting for approval and publishing."""
+    import concurrent.futures
+
     pipeline = get_pipeline()
+
+    # Ensure memory is hydrated from Notion (handles bot-restart scenario)
+    def _reload():
+        asyncio.run(pipeline._reload_pending_from_notion())
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        try:
+            pool.submit(_reload).result(timeout=30)
+        except Exception:
+            pass
+
     pending = pipeline.get_pending_reviews()
 
     if not pending:
