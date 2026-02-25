@@ -334,9 +334,11 @@ class ImprovedPodcastScriptGenerator:
                                        podcast_style: str, podcast_name: str, host_name: str) -> Dict:
         """Generate script with specific instructions for audio optimization"""
         
-        # Truncate content if too long
+        # Truncate content if too long — cut at word boundary to avoid broken words
         if len(content) > 3500:
-            content = content[:3500] + "..."
+            truncated = content[:3500]
+            last_space = truncated.rfind(' ')
+            content = (truncated[:last_space] if last_space > 0 else truncated) + "..."
         
         system_prompt = """You are an expert podcast script writer who creates scripts specifically optimized for text-to-speech audio generation. Your scripts must be completely clean and ready for direct audio conversion.
 
@@ -350,13 +352,16 @@ CRITICAL REQUIREMENTS FOR AUDIO OPTIMIZATION:
 7. Never include stage directions like [pause] or [music]
 8. Never include metadata like podcast name, duration, or episode info
 9. Write as one continuous speech flow
-10. Use "and" instead of "&" or other symbols"""
+10. Use "and" instead of "&" or other symbols
+11. Write in Australian English — use Australian spelling throughout (organisation, recognise, behaviour, colour, centre, programme, analyse, defence)
+12. Never hyphenate or break words across lines — always write complete, unbroken words"""
 
         user_prompt = f"""Create a podcast script for text-to-speech generation:
 
 TOPIC: {title}
 CONTENT TO COVER: {content}
 STYLE: {podcast_style} and engaging
+LANGUAGE: Australian English — use Australian spelling throughout (organisation, recognise, behaviour, colour, centre)
 TARGET LENGTH: {target_words} words (approximately {target_words // 160} minutes)
 PODCAST: {podcast_name}
 

@@ -606,6 +606,7 @@ CONTENT REQUIREMENTS:
 - Use ONLY the sourced information provided
 - Include proper attribution within the content flow
 - End with a comprehensive conclusion
+- Write in Australian English — use Australian spelling throughout (organisation, recognise, behaviour, colour, centre, programme, analyse, defence, licence, practise)
 
 HEADING STYLE REQUIREMENTS:
 - Make headings compelling and curiosity-driven

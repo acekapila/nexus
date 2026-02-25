@@ -411,6 +411,7 @@ CRITICAL CONTENT RULES:
 5. Focus on practical advice and actionable insights
 6. Use complete sentences with full context for any statistics
 7. Use the evidence naturally without announcing it's "evidence-based"
+8. Write in Australian English — use Australian spelling throughout (organisation, recognise, behaviour, colour, centre, programme, analyse, defence, licence, practise)
 
 STRUCTURE FORMAT:
 1. Introduction paragraph (engaging opener, no heading)
