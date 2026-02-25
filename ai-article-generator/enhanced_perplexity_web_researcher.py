@@ -5,6 +5,7 @@ import requests
 import asyncio
 import aiohttp
 import openai
+import anthropic
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -603,6 +604,7 @@ class EnhancedPerplexityWebResearcher:
     def __init__(self):
         self.api_key = os.getenv('PERPLEXITY_API_KEY')
         self.openai_client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.anthropic_client = anthropic.AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.base_url = "https://api.perplexity.ai/chat/completions"
         self.url_browser = EnhancedURLBrowser()
         
@@ -752,14 +754,13 @@ Provide analysis in JSON format:
 }}"""
             
             try:
-                response = await self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
+                response = await self.anthropic_client.messages.create(
+                    model="claude-sonnet-4-6",
                     messages=[{"role": "user", "content": analysis_prompt}],
                     max_tokens=1500,
-                    temperature=0.1
                 )
-                
-                analysis_text = response.choices[0].message.content.strip()
+
+                analysis_text = response.content[0].text.strip()
                 
                 # Clean JSON
                 if analysis_text.startswith('```json'):
@@ -832,14 +833,13 @@ Create enhanced synthesis in JSON format:
 }}"""
         
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = await self.anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
                 messages=[{"role": "user", "content": synthesis_prompt}],
                 max_tokens=2000,
-                temperature=0.2
             )
-            
-            synthesis_text = response.choices[0].message.content.strip()
+
+            synthesis_text = response.content[0].text.strip()
             
             if synthesis_text.startswith('```json'):
                 synthesis_text = synthesis_text.replace('```json', '').replace('```', '').strip()
