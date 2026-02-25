@@ -1047,6 +1047,87 @@ class NotionTaskManager:
             }
         }
 
+    # ── Pending-Review Helpers (used for bot-restart recovery) ────────────────
+
+    async def get_content_items_in_review(self) -> List[Dict]:
+        """
+        Return all content items currently at '👀 Your Review' status.
+        Used to re-hydrate _pending_publishes after a bot restart.
+        Returns list of dicts: {id, title, topic, draft_url, last_edited}.
+        """
+        result = await self._query_db(
+            DB["content"],
+            filters=[{"property": "Status", "select": {"equals": STATUS["content"]["review"]}}],
+            page_size=20,
+        )
+        items = []
+        for item in result.get("results", []):
+            props = item.get("properties", {})
+            items.append({
+                "id":           item["id"],
+                "title":        self._get_title(props, "Title"),
+                "topic":        self._get_text(props, "Topic") or self._get_title(props, "Title"),
+                "draft_url":    self._get_url(props, "Draft Page"),
+                "last_edited":  item.get("last_edited_time", ""),
+            })
+        return items
+
+    async def get_draft_page_content(self, content_item_id: str) -> Dict:
+        """
+        Fetch the draft child page under a content item and return its text.
+        Returns dict: {article_content, podcast_script, meta_description}.
+        Falls back to empty strings if the page cannot be fetched.
+        """
+        try:
+            draft_page_id = await self.find_draft_page_id(content_item_id)
+            if not draft_page_id:
+                return {"article_content": "", "podcast_script": "", "meta_description": ""}
+
+            result = await self.api.get(
+                f"blocks/{draft_page_id.replace('-', '')}/children?page_size=100"
+            )
+            blocks = result.get("results", [])
+
+            article_parts = []
+            podcast_parts = []
+            meta = ""
+            in_podcast_section = False
+
+            for block in blocks:
+                btype = block.get("type", "")
+                rich = block.get(btype, {}).get("rich_text", [])
+                text = "".join(r.get("plain_text", "") for r in rich)
+
+                # Detect section dividers
+                if btype in ("heading_2", "heading_3"):
+                    heading_text = text.lower()
+                    if "podcast" in heading_text:
+                        in_podcast_section = True
+                    elif heading_text:
+                        in_podcast_section = False
+
+                if btype == "callout":
+                    # Callout block often has meta/timestamp — skip for article
+                    meta_candidate = text
+                    if len(meta_candidate) < 300:
+                        meta = meta_candidate
+                    continue
+
+                if text:
+                    if in_podcast_section:
+                        podcast_parts.append(text)
+                    else:
+                        article_parts.append(text)
+
+            return {
+                "article_content":  "\n\n".join(article_parts),
+                "podcast_script":   "\n\n".join(podcast_parts),
+                "meta_description": meta,
+            }
+        except Exception as e:
+            print(f"  ⚠️  get_draft_page_content error for {content_item_id[:8]}: {e}")
+            return {"article_content": "", "podcast_script": "", "meta_description": ""}
+
     # ── Internal Helpers ──────────────────────────────────────────────────────
 
     async def _query_db(self, db_id: str, filters: List[Dict] = None,
@@ -1280,9 +1361,11 @@ class DigestFormatter:
         if content_review:
             lines.append(f"👀 **Content Pending Your Review ({len(content_review)})**")
             for c in content_review:
+                short_id = c.get("id", "").replace("-", "")[:8]
                 lines.append(f"  📝 {c['title']}")
+                lines.append(f"     ID: `{short_id}`  →  `approve article {short_id}`")
                 if c.get("draft_url"):
-                    lines.append(f"     → {c['draft_url']}")
+                    lines.append(f"     Draft: {c['draft_url']}")
             lines.append("")
 
         # Agent queue
