@@ -609,11 +609,14 @@ class EnhancedPerplexityWebResearcher:
         # Available models
         self.models = {
             "sonar": "sonar",
-            "sonar-pro": "sonar-pro", 
+            "sonar-pro": "sonar-pro",
             "sonar-reasoning": "sonar-reasoning-pro"
         }
-        
-        self.current_model = self.models["sonar"]
+
+        # Default to sonar-reasoning-pro — benchmarks #1 for factual research
+        # (statistically tied with Gemini 2.5 Pro Grounding, wins 53% head-to-head)
+        # Cost: ~$5/M input, $8/M output — adds ~$0.14 per article vs sonar ($0.02)
+        self.current_model = self.models["sonar-reasoning"]
         
         # Rate limiting
         self.last_request_time = 0
