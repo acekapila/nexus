@@ -5,7 +5,7 @@ import json
 import asyncio
 import openai
 import anthropic
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from urllib.parse import urlparse
@@ -49,12 +49,13 @@ class EnhancedSourceTracker:
             'verizon.com', 'mandiant.com', 'crowdstrike.com', 'symantec.com'
         }
     
-    def calculate_source_reliability(self, url: str, title: str, content: str) -> float:
-        """Calculate reliability score for a source"""
+    def calculate_source_reliability(self, url: str, title: str, content: str,
+                                     publish_date: str = "") -> float:
+        """Calculate reliability score for a source, including freshness (12-month cutoff)."""
         score = 0.5  # Base score
-        
+
         domain = urlparse(url).netloc.lower().replace('www.', '')
-        
+
         # Domain reputation
         if any(reliable in domain for reliable in self.reliable_domains):
             score += 0.3
@@ -62,16 +63,40 @@ class EnhancedSourceTracker:
             score += 0.25
         elif domain.endswith('.org'):
             score += 0.15
-        
+
         # Content quality indicators
-        if len(content) > 1000:  # Substantial content
+        if len(content) > 1000:
             score += 0.1
         if 'study' in title.lower() or 'research' in title.lower():
             score += 0.1
         if 'survey' in title.lower() or 'report' in title.lower():
             score += 0.05
-        
-        return min(1.0, score)
+
+        # Freshness scoring — articles older than 12 months are penalised
+        parsed_date = self._parse_publish_date(publish_date)
+        if parsed_date:
+            age_days = (datetime.now() - parsed_date).days
+            if age_days <= 180:        # < 6 months — fresh bonus
+                score += 0.2
+            elif age_days <= 365:      # 6–12 months — neutral
+                pass
+            else:                      # > 12 months — stale penalty
+                score -= 0.3
+
+        return max(0.0, min(1.0, score))
+
+    def _parse_publish_date(self, date_str: str) -> Optional[datetime]:
+        """Parse a date string into datetime. Returns None if unparseable."""
+        if not date_str:
+            return None
+        date_str = re.sub(r'[TZ].*', '', date_str.strip()).strip()
+        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%B %d, %Y',
+                    '%b %d, %Y', '%d %B %Y', '%d %b %Y', '%Y'):
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+        return None
     
     async def extract_sourced_claims_from_content(self, content: str, url: str, 
                                                 title: str, full_content: str) -> List[SourcedClaim]:
@@ -80,7 +105,7 @@ class EnhancedSourceTracker:
         print(f"   🔍 Extracting sourced claims from: {url[:50]}...")
         
         domain = urlparse(url).netloc.lower().replace('www.', '')
-        reliability = self.calculate_source_reliability(url, title, full_content)
+        reliability = self.calculate_source_reliability(url, title, full_content, publish_date="")
         
         extraction_prompt = f"""Analyze this article content and extract ONLY factual claims that include statistics, data, or specific findings. For each claim, determine if the article cites a source.
 
@@ -263,7 +288,8 @@ class EnhancedPerplexityWebResearcherWithSourceTracking:
                     "title": content.title,
                     "word_count": content.word_count,
                     "reliability_score": self.source_tracker.calculate_source_reliability(
-                        content.url, content.title, content.content
+                        content.url, content.title, content.content,
+                        publish_date=getattr(content, 'publish_date', '')
                     )
                 }
                 for content in browsed_contents
@@ -633,6 +659,13 @@ STRUCTURE FORMAT:
 5. ## [Results-oriented heading about outcomes/benefits]
 6. ## [Challenge-focused heading about obstacles/limitations]
 7. ## Conclusion
+
+DATA FRESHNESS REQUIREMENTS (current year is {datetime.now().year}):
+- ONLY use statistics, reports and findings that are from {datetime.now().year - 1} or later
+- If a statistic is from more than 12 months ago, mark it as [HISTORICAL DATA - {datetime.now().year - 1}] and note it may be outdated
+- NEVER present old data as if it is current — do not write "in 2023" or "last year" unless that year is actually recent
+- Prefer phrasing like "as of {datetime.now().year}" or "recent studies show" for current data
+- If all available data on a point is older than 12 months, acknowledge this: "While older data from [year] suggests X, more recent figures may differ"
 
 CRITICAL INSTRUCTIONS:
 - Do NOT include any title or main heading
