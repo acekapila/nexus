@@ -53,7 +53,7 @@
 | `write_file` | Write content to a local file |
 | `list_files` | List files in a directory |
 
-**Config files location:** `/home/azureuser/nexus/`
+**Config files location:** `/home/azureuser/nexus/nexus/` (bot code, .env, .md files are in the `nexus/` subfolder of the repo)
 
 ---
 
