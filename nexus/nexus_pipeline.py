@@ -166,19 +166,32 @@ class NexusPipeline:
     async def run(
         self,
         topic: str,
+        context: str = None,
         content_type: str = "article",
         audience: str = None,
         article_type: str = "how-to",
         max_urls: int = 6,
         generate_audio: bool = True,
         notify_discord: bool = True,
+        use_gemini: bool = True,
     ) -> Dict:
         """
         Run the pipeline up to the review gate.
-        
+
         Creates a Notion content item, runs Research → Generate → QA,
         saves the draft to Notion, and pauses for human approval.
-        
+
+        Parameters
+        ----------
+        topic        : Article topic (e.g. "AI in cybersecurity")
+        context      : Optional research scope/angles to focus Perplexity AND Gemini
+                       queries on the exact sub-topics you want covered.
+                       E.g. "adversaries using AI across kill chain: recon, exploit
+                       writing, C2 evasion, lateral movement"
+        use_gemini   : If True and GEMINI_API_KEY is set, also run a Gemini deep-
+                       research pass and merge results with Perplexity for richer
+                       article content. Default True.
+
         Returns dict with:
           - content_id: Notion page ID (use this to approve)
           - draft_url:  Link to the draft in Notion
@@ -236,23 +249,26 @@ class NexusPipeline:
                 )
 
             # ── Step 2: Research ──────────────────────────────────────────────
-            await reporter.update("researching", f"Researching: {topic}")
+            research_label = f"Researching: {topic}"
+            if context:
+                research_label += f" (context: {context[:80]}{'...' if len(context) > 80 else ''})"
+            await reporter.update("researching", research_label)
 
             system = self._get_article_system()
 
-            # Run research phase only
+            # Run research phase — pass context to focus queries
             research_data = {}
             if system.enhanced_research_available:
                 try:
                     research_data = await system.researcher.deep_research_topic_with_browsing(
-                        topic, max_urls_to_browse=max_urls
+                        topic, max_urls_to_browse=max_urls, context=context
                     )
                     urls_browsed = research_data.get("urls_analyzed", 0)
                     words = research_data.get("total_words_browsed", 0)
-                    print(f"  ✅ Research complete: {urls_browsed} URLs, {words} words")
+                    print(f"  ✅ Perplexity research complete: {urls_browsed} URLs, {words} words")
                     await reporter.update(
                         "researching",
-                        f"Research complete — {urls_browsed} URLs, {words} words",
+                        f"Perplexity research complete — {urls_browsed} URLs, {words} words",
                         urls_browsed=urls_browsed,
                     )
                 except Exception as e:
@@ -260,7 +276,7 @@ class NexusPipeline:
                     research_data = {"web_research_enabled": False}
             elif system.perplexity_available:
                 try:
-                    results = await system.researcher.research_topic_comprehensive(topic)
+                    results = await system.researcher.research_topic_comprehensive(topic, context=context)
                     research_data = system.researcher.format_research_for_article_generation(results)
                     await reporter.update("researching", "Standard research complete",
                                           research_score=float(research_data.get("sources_analyzed", 0)))
@@ -269,6 +285,21 @@ class NexusPipeline:
                     research_data = {"web_research_enabled": False}
             else:
                 research_data = {"web_research_enabled": False}
+
+            # ── Step 2b: Gemini deep-research (optional enrichment) ───────────
+            if use_gemini:
+                try:
+                    from enhanced_perplexity_web_researcher import GeminiResearcher
+                    gemini = GeminiResearcher()
+                    if gemini.available:
+                        await reporter.update("researching", "Running Gemini deep-research pass...")
+                        gemini_data = await gemini.research_topic(topic, context=context)
+                        research_data = GeminiResearcher.merge_with_perplexity(research_data, gemini_data)
+                        print(f"  ✅ Gemini enrichment complete — merged {len(gemini_data.get('evidence_based_findings', []))} findings")
+                    else:
+                        print("  ℹ️  GEMINI_API_KEY not set — skipping Gemini enrichment")
+                except Exception as e:
+                    print(f"  ⚠️ Gemini research skipped: {e}")
 
             # ── Step 3: Generate article ──────────────────────────────────────
             await reporter.update("drafting", "Generating article draft...")
@@ -607,10 +638,12 @@ def get_pipeline() -> NexusPipeline:
 
 def nexus_write_article(
     topic: str,
+    context: str = None,
     content_type: str = "article",
     audience: str = None,
     max_urls: int = 6,
     generate_audio: bool = True,
+    use_gemini: bool = True,
 ) -> str:
     """
     Trigger the full content pipeline for a given topic.
@@ -618,7 +651,13 @@ def nexus_write_article(
     Sends Discord notification when ready for review.
     Returns immediately with the content ID for tracking.
 
-    This is the main trigger for content creation in Nexus.
+    Parameters
+    ----------
+    topic      : Article topic
+    context    : Optional research scope/angles — e.g. "adversaries using AI
+                 in the kill chain: recon, exploit writing, C2 evasion"
+    use_gemini : Run a Gemini deep-research pass in addition to Perplexity
+                 and merge results for richer content (default True)
     """
     import concurrent.futures
 
@@ -627,10 +666,12 @@ def nexus_write_article(
     def _run():
         return asyncio.run(pipeline.run(
             topic=topic,
+            context=context,
             content_type=content_type,
             audience=audience,
             max_urls=max_urls,
             generate_audio=generate_audio,
+            use_gemini=use_gemini,
         ))
 
     # Run in thread to avoid blocking Skyler's event loop

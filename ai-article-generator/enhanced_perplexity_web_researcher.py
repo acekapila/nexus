@@ -630,15 +630,29 @@ class EnhancedPerplexityWebResearcher:
         else:
             logger.warning(f"Unknown model type: {model_type}. Using default: sonar")
     
-    async def deep_research_topic_with_browsing(self, topic: str, time_range: str = "6 months", 
-                                              max_articles: int = 8, max_urls_to_browse: int = 10) -> Dict:
-        """Enhanced deep research with URL browsing"""
-        
+    async def deep_research_topic_with_browsing(self, topic: str, time_range: str = "6 months",
+                                              max_articles: int = 8, max_urls_to_browse: int = 10,
+                                              context: str = None) -> Dict:
+        """
+        Enhanced deep research with URL browsing.
+
+        Parameters
+        ----------
+        topic           : Article topic
+        time_range      : How far back to look (default "6 months")
+        max_articles    : Unused (kept for API compat)
+        max_urls_to_browse : How many URLs to actually browse
+        context         : Optional research scope/angles to focus Perplexity queries
+                          (e.g. "adversaries using AI in the cyber kill chain")
+        """
+
         logger.info(f"Starting enhanced deep research on '{topic}' with URL browsing...")
-        
+        if context:
+            logger.info(f"  Research context: {context[:120]}{'...' if len(context) > 120 else ''}")
+
         # Step 1: Get initial research with URLs
         print("Step 1: Conducting initial Perplexity research...")
-        initial_research = await self.research_topic_comprehensive(topic, time_range)
+        initial_research = await self.research_topic_comprehensive(topic, time_range, context=context)
         
         # Step 2: Extract and browse URLs from research
         print("Step 2: Extracting URLs from research data...")
@@ -661,12 +675,12 @@ class EnhancedPerplexityWebResearcher:
         
         # Step 4: Analyze browsed content
         print("Step 5: Analyzing browsed content...")
-        analyzed_contents = await self._analyze_browsed_content(browsed_contents, topic)
-        
+        analyzed_contents = await self._analyze_browsed_content(browsed_contents, topic, context=context)
+
         # Step 5: Synthesize everything
         print("Step 6: Synthesizing enhanced research...")
         enhanced_synthesis = await self._synthesize_enhanced_research(
-            initial_research, analyzed_contents, topic
+            initial_research, analyzed_contents, topic, context=context
         )
         
         # Step 6: Create comprehensive research data
@@ -674,6 +688,7 @@ class EnhancedPerplexityWebResearcher:
             "topic": topic,
             "research_date": datetime.now().isoformat(),
             "research_type": "enhanced_deep_research_with_browsing",
+            "research_context": context or "",
             "time_range": time_range,
             "model_used": self.current_model,
             "urls_found": len(urls_with_metadata),
@@ -702,17 +717,22 @@ class EnhancedPerplexityWebResearcher:
         
         return self.format_enhanced_research_for_generation(enhanced_research)
     
-    async def _analyze_browsed_content(self, browsed_contents: List[BrowsedContent], topic: str) -> List[Dict]:
-        """Analyze browsed content for insights"""
+    async def _analyze_browsed_content(self, browsed_contents: List[BrowsedContent], topic: str,
+                                        context: str = None) -> List[Dict]:
+        """Analyze browsed content for insights, optionally focused by research context."""
         analyzed_contents = []
-        
+
+        context_instruction = (
+            f"\nFocus your analysis specifically on content related to: {context}" if context else ""
+        )
+
         for content in browsed_contents:
             if content.word_count < 20:  # Very low threshold
                 continue
-            
+
             logger.info(f"Analyzing content from {content.url[:50]}...")
-            
-            analysis_prompt = f"""Analyze this article content about "{topic}" and extract insights:
+
+            analysis_prompt = f"""Analyze this article content about "{topic}" and extract insights.{context_instruction}
 
 ARTICLE CONTENT:
 {content.content[:4000]}
@@ -755,25 +775,30 @@ Provide analysis in JSON format:
         
         return analyzed_contents
     
-    async def _synthesize_enhanced_research(self, initial_research: Dict, 
-                                          analyzed_contents: List[Dict], topic: str) -> Dict:
-        """Synthesize initial research with browsed content analysis"""
-        
+    async def _synthesize_enhanced_research(self, initial_research: Dict,
+                                          analyzed_contents: List[Dict], topic: str,
+                                          context: str = None) -> Dict:
+        """Synthesize initial research with browsed content analysis."""
+
         logger.info("Synthesizing enhanced research findings...")
-        
+
         # Combine insights from all sources
         all_insights = []
         all_data = []
         all_methodologies = []
         all_applications = []
-        
+
         for analysis in analyzed_contents:
             all_insights.extend(analysis.get("main_insights", []))
             all_data.extend(analysis.get("unique_data", []))
             all_methodologies.extend(analysis.get("methodologies", []))
             all_applications.extend(analysis.get("practical_applications", []))
-        
-        synthesis_prompt = f"""Synthesize comprehensive research about "{topic}" from multiple sources:
+
+        context_line = (
+            f"\nFocus the synthesis specifically on this angle: {context}\n" if context else ""
+        )
+
+        synthesis_prompt = f"""Synthesize comprehensive research about "{topic}" from multiple sources.{context_line}
 
 INITIAL RESEARCH SUMMARY:
 {initial_research.get('synthesis', {}).get('content', '')[:2000]}
@@ -903,22 +928,96 @@ Create enhanced synthesis in JSON format:
         return " | ".join(summary_parts)
     
     # Keep existing methods for backward compatibility
-    async def research_topic_comprehensive(self, topic: str, time_range: str = "6 months") -> Dict:
-        """Original comprehensive research method with better URL inclusion"""
-        
+    def _build_research_queries(self, topic: str, context: str = None, time_range: str = "6 months") -> tuple:
+        """
+        Build targeted research queries and synthesis query.
+
+        If `context` is provided it is used to sharpen the queries so that
+        Perplexity focuses on the exact angles and sub-topics the author cares
+        about rather than generic coverage of the topic.
+
+        Returns (research_queries: List[str], synthesis_query: str)
+        """
+        if context:
+            # Context-aware queries — focus each query on a different facet of
+            # the provided context so we get deep, targeted information.
+            research_queries = [
+                (
+                    f"Research the following topic in depth: '{topic}'. "
+                    f"Specifically focus on: {context}. "
+                    f"Find recent authoritative sources from the past {time_range} covering these exact angles. "
+                    f"Include complete URLs and links to original sources."
+                ),
+                (
+                    f"What are the latest expert insights, real-world examples, and documented cases "
+                    f"related to '{topic}' — specifically around: {context}? "
+                    f"Provide URLs to studies, threat reports, and authoritative sources."
+                ),
+                (
+                    f"Find specific technical details, statistics, attack patterns, methodologies, "
+                    f"or frameworks related to '{topic}' with this focus: {context}. "
+                    f"Include links to in-depth analyses, research papers, and industry reports."
+                ),
+                (
+                    f"What are the most credible academic, government, and industry sources discussing "
+                    f"'{topic}' with emphasis on: {context}? "
+                    f"Provide specific URLs, publication names, and author details."
+                ),
+            ]
+            synthesis_query = (
+                f"Synthesize comprehensive research about '{topic}' with a specific focus on: {context}.\n\n"
+                f"Structure your synthesis to cover:\n"
+                f"1. Current expert consensus and key findings (with source URLs) directly related to {context}\n"
+                f"2. Real-world documented examples, incidents, or case studies\n"
+                f"3. Technical details, methodologies, and frameworks\n"
+                f"4. Statistics and data points with citations\n"
+                f"5. Knowledge gaps and emerging trends specific to this focus area\n\n"
+                f"Please include all available complete URLs and links to authoritative sources."
+            )
+        else:
+            # Generic queries — original behaviour
+            research_queries = [
+                f"Find recent authoritative articles about {topic} from the past {time_range}. Include complete URLs and links to original sources.",
+                f"What are current expert insights and research findings related to {topic}? Provide URLs to studies and authoritative sources.",
+                f"Identify emerging perspectives and industry reports on {topic}. Include links to in-depth analyses and research papers.",
+                f"What are the most credible academic and industry sources discussing {topic}? Provide specific URLs and publication links.",
+            ]
+            synthesis_query = (
+                f"Synthesize research about {topic} focusing on:\n"
+                f"1. Current expert consensus and findings with complete source URLs\n"
+                f"2. Advanced methodologies and frameworks with reference links\n"
+                f"3. Evidence-based insights with citations and full URLs\n"
+                f"4. Practical applications with reference links\n"
+                f"5. Knowledge gaps and emerging considerations with source URLs\n\n"
+                f"Please include all available complete URLs and links to authoritative sources in your response."
+            )
+
+        return research_queries, synthesis_query
+
+    async def research_topic_comprehensive(self, topic: str, time_range: str = "6 months",
+                                           context: str = None) -> Dict:
+        """
+        Comprehensive Perplexity research.
+
+        Parameters
+        ----------
+        topic       : The article topic (e.g. "AI in cybersecurity")
+        time_range  : How far back to search (default "6 months")
+        context     : Optional free-text scope/angles to focus research on
+                      (e.g. "adversaries using AI across the kill chain:
+                       vulnerability scanning, exploit writing, C2 evasion")
+        """
+
         logger.info(f"Conducting comprehensive research on '{topic}' using Perplexity...")
-        
-        research_queries = [
-            f"Find recent authoritative articles about {topic} from the past {time_range}. Include complete URLs and links to original sources.",
-            f"What are current expert insights and research findings related to {topic}? Provide URLs to studies and authoritative sources.",
-            f"Identify emerging perspectives and industry reports on {topic}. Include links to in-depth analyses and research papers.",
-            f"What are the most credible academic and industry sources discussing {topic}? Provide specific URLs and publication links."
-        ]
-        
+        if context:
+            logger.info(f"  Research context: {context[:120]}{'...' if len(context) > 120 else ''}")
+
+        research_queries, synthesis_query = self._build_research_queries(topic, context, time_range)
+
         research_results = {}
-        
+
         for i, query in enumerate(research_queries, 1):
-            logger.info(f"  Running query {i}/4...")
+            logger.info(f"  Running query {i}/{len(research_queries)}...")
             result = await self._query_perplexity(query)
             research_results[f"query_{i}"] = {
                 "question": query,
@@ -927,22 +1026,14 @@ Create enhanced synthesis in JSON format:
                 "timestamp": datetime.now().isoformat()
             }
             await asyncio.sleep(1)
-        
+
         # Enhanced synthesis with URL focus
-        synthesis_query = f"""Synthesize research about {topic} focusing on:
-        1. Current expert consensus and findings with complete source URLs
-        2. Advanced methodologies and frameworks with reference links
-        3. Evidence-based insights with citations and full URLs
-        4. Practical applications with reference links
-        5. Knowledge gaps and emerging considerations with source URLs
-        
-        Please include all available complete URLs and links to authoritative sources in your response."""
-        
         logger.info("  Synthesizing findings...")
         synthesis = await self._query_perplexity(synthesis_query)
         
         return {
             "topic": topic,
+            "research_context": context or "",
             "research_date": datetime.now().isoformat(),
             "time_range": time_range,
             "model_used": self.current_model,
@@ -954,7 +1045,7 @@ Create enhanced synthesis in JSON format:
             },
             "total_sources": self._extract_unique_sources(research_results, synthesis)
         }
-    
+
     async def _query_perplexity(self, query: str) -> Dict:
         """Query Perplexity API with enhanced URL extraction"""
         
@@ -1163,6 +1254,166 @@ Create enhanced synthesis in JSON format:
             if any(keyword in line.lower() for keyword in ['trend:', 'trending:', 'emerging:', 'growing:']):
                 trends.append(line.strip())
         return trends[:3]
+
+
+# ── Gemini Research ────────────────────────────────────────────────────────────
+
+class GeminiResearcher:
+    """
+    Research assistant powered by Google Gemini.
+
+    Gemini excels at:
+    - Deep synthesis of complex, multi-faceted topics
+    - Technical depth (especially in cybersecurity, AI, engineering)
+    - Connecting scattered facts across domains
+    - Generating structured outlines and frameworks from raw knowledge
+
+    Perplexity excels at:
+    - Real-time web search with citations
+    - Finding current news, reports, and recent publications
+    - Returning source URLs for further browsing
+
+    Best practice: use BOTH.  Run Perplexity first (real-time sources + URLs),
+    then run Gemini on the same topic+context to get a deep synthesis layer.
+    The two outputs are merged before article generation.
+
+    Requires: GEMINI_API_KEY in .env
+    Install:  pip install google-generativeai
+    """
+
+    def __init__(self):
+        self.api_key = os.getenv("GEMINI_API_KEY")
+        self._client = None
+        self._model_name = "gemini-1.5-pro-latest"   # best for deep reasoning
+        if not self.api_key:
+            logger.warning("GEMINI_API_KEY not found — Gemini research disabled")
+
+    def _get_client(self):
+        """Lazy-init the Gemini client."""
+        if self._client is None:
+            try:
+                import google.generativeai as genai  # type: ignore
+                genai.configure(api_key=self.api_key)
+                self._client = genai.GenerativeModel(self._model_name)
+            except ImportError:
+                raise ImportError(
+                    "google-generativeai not installed. "
+                    "Run: pip install google-generativeai"
+                )
+        return self._client
+
+    @property
+    def available(self) -> bool:
+        return bool(self.api_key)
+
+    async def research_topic(self, topic: str, context: str = None) -> Dict:
+        """
+        Deep-research a topic using Gemini.
+
+        Returns a dict compatible with the format expected by
+        `format_enhanced_research_for_generation` so it can be merged with
+        Perplexity results or used standalone.
+        """
+        if not self.available:
+            return {"gemini_available": False, "error": "GEMINI_API_KEY not set"}
+
+        logger.info(f"[Gemini] Starting deep research on '{topic}'...")
+        context_line = f"\n\nFocus specifically on: {context}" if context else ""
+
+        prompt = f"""You are an expert research analyst. Conduct deep, structured research on the following topic and return your findings as a JSON object.
+
+TOPIC: {topic}{context_line}
+
+Return ONLY a valid JSON object (no markdown fences) with this exact structure:
+{{
+  "comprehensive_themes": ["5-7 major themes with detailed descriptions"],
+  "evidence_based_findings": ["6-10 key findings with specifics — include data, events, or named tools/techniques"],
+  "novel_insights": ["3-5 unique angles or lesser-known insights worth covering"],
+  "data_driven_points": ["Specific statistics, percentages, or quantified facts (cite source or year where known)"],
+  "practical_framework": ["4-6 actionable steps or a structured framework an audience can apply"],
+  "expert_perspectives": ["Named experts, researchers, or organisations and their viewpoints"],
+  "implementation_strategies": ["Concrete implementation steps or real-world applications"],
+  "content_gaps": ["What most articles miss about this topic"],
+  "real_world_examples": ["Named incidents, case studies, tools, or documented events with dates where possible"],
+  "recommended_sections": ["Suggested H2 section headings for a high-quality article"]
+}}
+
+Be specific. Avoid vague generalisations. Include real names, dates, tool names, and documented incidents where possible."""
+
+        try:
+            model = self._get_client()
+            # Run blocking call in executor
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: model.generate_content(
+                    prompt,
+                    generation_config={
+                        "temperature": 0.2,
+                        "max_output_tokens": 4096,
+                    }
+                )
+            )
+            raw = response.text.strip()
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = re.sub(r"^```(?:json)?\s*", "", raw)
+                raw = re.sub(r"\s*```$", "", raw.strip())
+
+            data = json.loads(raw)
+            data["gemini_available"] = True
+            data["model"] = self._model_name
+            data["topic"] = topic
+            data["research_context"] = context or ""
+            data["research_date"] = datetime.now().isoformat()
+            logger.info(f"[Gemini] Research complete — {len(data.get('evidence_based_findings', []))} findings")
+            return data
+
+        except json.JSONDecodeError as e:
+            logger.error(f"[Gemini] JSON parse error: {e}")
+            return {"gemini_available": True, "error": f"JSON parse failed: {e}", "raw": raw[:500]}
+        except Exception as e:
+            logger.error(f"[Gemini] Research failed: {e}")
+            return {"gemini_available": False, "error": str(e)}
+
+    @staticmethod
+    def merge_with_perplexity(perplexity_data: Dict, gemini_data: Dict) -> Dict:
+        """
+        Merge Gemini deep-research output into Perplexity-format research data.
+
+        The merged dict is compatible with `format_enhanced_research_for_generation`
+        and carries all the richer Gemini fields alongside Perplexity URL sources.
+        """
+        if not gemini_data.get("gemini_available"):
+            return perplexity_data   # fall back to Perplexity-only
+
+        merged = dict(perplexity_data)  # start with Perplexity base
+
+        def _merge_list(key: str):
+            existing = merged.get(key, [])
+            new = gemini_data.get(key, [])
+            combined = list(existing) + [x for x in new if x not in existing]
+            merged[key] = combined
+
+        for field in [
+            "comprehensive_themes", "evidence_based_findings", "novel_insights",
+            "data_driven_points", "practical_framework", "expert_perspectives",
+            "implementation_strategies", "content_gaps",
+        ]:
+            _merge_list(field)
+
+        # Gemini-only extras
+        merged["real_world_examples"] = gemini_data.get("real_world_examples", [])
+        merged["recommended_sections"] = gemini_data.get("recommended_sections", [])
+        merged["gemini_enriched"] = True
+        merged["gemini_model"] = gemini_data.get("model", "")
+
+        logger.info(
+            f"[Gemini] Merged into Perplexity data — "
+            f"{len(merged.get('evidence_based_findings', []))} findings, "
+            f"{len(merged.get('novel_insights', []))} novel insights"
+        )
+        return merged
 
 
 # Test functions

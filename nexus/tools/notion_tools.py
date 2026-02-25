@@ -410,19 +410,30 @@ def notion_daily_focus(
 
 def nexus_write_article(
     topic: str,
+    context: str = None,
     content_type: str = "article",
     audience: str = None,
     max_urls: int = 6,
     generate_audio: bool = True,
+    use_gemini: bool = True,
 ) -> str:
     """
     Trigger the full Nexus content pipeline for a given topic.
-    Runs: Research → Generate → QA → Save draft to Notion.
+    Runs: Research (Perplexity + optional Gemini) → Generate → QA → Save draft to Notion.
     Notifies Discord when ready for review. Returns content ID.
+
+    topic   : Article topic
+    context : Optional research scope/angles to focus research on specific
+              sub-topics or angles (e.g. "adversaries using AI in kill chain:
+              recon, scanning, exploit writing, C2 evasion")
     """
     try:
         from nexus_pipeline import nexus_write_article as _nexus_write_article
-        return _nexus_write_article(topic, content_type, audience, max_urls, generate_audio)
+        return _nexus_write_article(
+            topic, context=context, content_type=content_type,
+            audience=audience, max_urls=max_urls,
+            generate_audio=generate_audio, use_gemini=use_gemini,
+        )
     except ImportError as e:
         return f"❌ Nexus pipeline not available: {e}"
 

@@ -408,6 +408,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "topic":        {"type": "string", "description": "The article topic"},
+                "context":      {"type": "string", "description": "Optional research context — specific angles, sub-topics, or scope to focus the research on. E.g. 'focus on how adversaries use AI across the kill chain: vulnerability scanning, exploit writing, C2 evasion'"},
                 "content_type": {"type": "string", "description": "article|podcast|linkedin|newsletter"},
                 "audience":     {"type": "string", "description": "Target audience (optional)"},
                 "max_urls":     {"type": "integer", "description": "Max URLs to research (1-10, default 6)"},
@@ -767,7 +768,11 @@ def describe_tool_call(name: str, inputs: dict) -> str:
         "notion_add_audit_issue":    f"🏢 Logging audit issue: _{i.get('issue_name', '')}_",
         "notion_daily_focus":        "🎯 Setting daily focus in Notion...",
         # Nexus pipeline
-        "nexus_write_article":       f"✍️ Starting article pipeline: _{i.get('topic', '')}_  _(this takes 5–10 min)_",
+        "nexus_write_article":       (
+            f"✍️ Starting article pipeline: _{i.get('topic', '')}_"
+            + (f"\n📌 Research context: _{i.get('context', '')[:100]}_" if i.get('context') else "")
+            + "  _(this takes 5–10 min)_"
+        ),
         "nexus_approve_and_publish": f"🚀 Publishing article `{str(i.get('content_id_prefix',''))[:8]}...`",
         "nexus_pending_articles":    "👀 Checking drafts awaiting review...",
         "nexus_revise_article":      f"✏️ Updating draft `{str(i.get('content_id_prefix',''))[:8]}` — adding: _{i.get('instruction', '')[:60]}_...",
