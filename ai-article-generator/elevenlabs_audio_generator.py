@@ -26,7 +26,7 @@ except ImportError:
 class HybridPodcastGenerator:
     """Generate conversational scripts with OpenAI, then create audio with ElevenLabs"""
     
-    def __init__(self, voice_id: str = "JBFqnCBsd6RMkjVDRZzb"):
+    def __init__(self, voice_id: str = "iZURAYccQtQd12U8kEcq"):
         # OpenAI setup for script generation
         self.openai_client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         self.openai_available = bool(os.getenv('OPENAI_API_KEY'))
@@ -396,11 +396,11 @@ class BlogAudioGenerator:
     
     def __init__(self, voice_id: str = None):
         # Initialize hybrid generator
-        self.hybrid_generator = HybridPodcastGenerator(voice_id or "JBFqnCBsd6RMkjVDRZzb")
+        self.hybrid_generator = HybridPodcastGenerator(voice_id or "iZURAYccQtQd12U8kEcq")
         self.available = self.hybrid_generator.available
         
         # Preserve original interface properties
-        self.voice_id = voice_id or "JBFqnCBsd6RMkjVDRZzb"
+        self.voice_id = voice_id or "iZURAYccQtQd12U8kEcq"
         self.voice_name = "george"
         
         if self.available:

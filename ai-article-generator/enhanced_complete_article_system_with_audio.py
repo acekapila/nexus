@@ -954,7 +954,7 @@ class EnhancedQualityControlledArticleSystemWithAudio:
         self.linkedin = EnhancedLinkedInPoster()
         
         # NEW: Audio components
-        self.audio_generator = BlogAudioGenerator("JBFqnCBsd6RMkjVDRZzb")  # george voice
+        self.audio_generator = BlogAudioGenerator("iZURAYccQtQd12U8kEcq")  # custom voice
         self.wordpress = AudioEnhancedWordPressPublisher()  # Enhanced version
         
         # Check system availability (existing + audio)
