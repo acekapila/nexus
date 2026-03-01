@@ -107,12 +107,13 @@
 
 ---
 
-## Article Pipeline (3 tools)
+## Article Pipeline (4 tools)
 
 | Tool | When to use |
 |------|-------------|
 | `nexus_write_article` | Trigger the full content pipeline — research, write, QA, podcast script, save draft to Notion |
-| `nexus_approve_and_publish` | Approve a reviewed draft and publish to WordPress + LinkedIn |
+| `nexus_approve_and_publish` | Approve a reviewed draft and publish to WordPress + LinkedIn — ONLY when Sumit explicitly approves |
+| `nexus_reject_article` | Reject/delete a draft — use when Sumit says "delete", "reject", "discard", "don't publish" |
 | `nexus_pending_articles` | Show drafts waiting for Sumit's approval |
 
 **Pipeline flow (all via Article Generator):**
@@ -123,6 +124,10 @@
 **Deduplication:** If a pipeline entry for this topic already exists and is not yet published, the tool warns instead of starting a new run.
 
 **Approving:** Pass the content ID (first 8 chars shown in the ready notification): `nexus_approve_and_publish("ab12cd34")`
+
+**Rejecting/deleting:** Pass the content ID or title: `nexus_reject_article("ab12cd34")` — this moves the draft to ❌ Rejected in Notion and will NOT publish it. Use for any variation of "delete", "discard", "cancel", "reject", "don't publish".
+
+**CRITICAL — approve vs reject:** Never call `nexus_approve_and_publish` when Sumit says delete/reject/discard. These are opposite actions.
 
 ---
 

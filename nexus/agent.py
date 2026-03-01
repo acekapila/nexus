@@ -30,6 +30,7 @@ from tools.notion_tools import (
     nexus_approve_and_publish,
     nexus_pending_articles,
     nexus_revise_article,
+    nexus_reject_article,
     route_task,
     cost_estimate,
     cost_summary_weekly,
@@ -107,6 +108,9 @@ CLAUDE_TRIGGERS = [
     "write podcast", "create podcast episode",
     "approve article", "publish article", "approve and publish",
     "pending articles", "drafts waiting",
+    "delete article", "delete this article", "delete the article", "reject article",
+    "reject this draft", "discard article", "discard draft", "cancel article",
+    "don't publish", "do not publish", "remove this draft", "remove the draft",
     "update the article", "update the draft", "revise the article", "revise the draft",
     "add to the article", "add to the draft", "add examples", "add more examples",
     "expand the article", "update draft", "edit the article", "edit the draft",
@@ -422,7 +426,8 @@ TOOLS = [
         "description": (
             "Approve a reviewed article draft and publish it to WordPress + LinkedIn. "
             "This is the human-in-the-loop PUBLISH gate. "
-            "Use when Sumit says 'approve', 'publish', 'approve article [id]', or similar. "
+            "ONLY use when Sumit explicitly says 'approve', 'publish', 'approve article [id]', or 'go ahead and publish'. "
+            "NEVER use this for 'delete', 'reject', 'discard', 'cancel', or 'don't publish' — use nexus_reject_article instead. "
             "Requires the content ID shown when the draft was created."
         ),
         "input_schema": {
@@ -437,6 +442,26 @@ TOOLS = [
         "name": "nexus_pending_articles",
         "description": "Show all article drafts waiting for Sumit's approval to publish.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "nexus_reject_article",
+        "description": (
+            "Reject and discard an article draft — moves it to 'Rejected' in Notion and removes it from the publish queue. "
+            "Use when Sumit says 'delete this article', 'reject this draft', 'discard', 'don't publish this', "
+            "'cancel the article', 'remove this draft', or any similar intent to abandon a draft WITHOUT publishing. "
+            "This is the OPPOSITE of nexus_approve_and_publish — it prevents publishing. "
+            "Requires the content ID or partial title of the draft to reject."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content_id_prefix": {
+                    "type": "string",
+                    "description": "Content ID (or first 8 chars) or partial article title to identify which draft to reject.",
+                },
+            },
+            "required": ["content_id_prefix"],
+        },
     },
     {
         "name": "nexus_revise_article",
@@ -705,6 +730,7 @@ TOOL_MAP = {
     "nexus_approve_and_publish":  nexus_approve_and_publish,
     "nexus_pending_articles":     nexus_pending_articles,
     "nexus_revise_article":       nexus_revise_article,
+    "nexus_reject_article":       nexus_reject_article,
     # Task router
     "route_task":          route_task,
     "cost_estimate":       cost_estimate,
@@ -776,6 +802,7 @@ def describe_tool_call(name: str, inputs: dict) -> str:
         "nexus_approve_and_publish": f"🚀 Publishing article `{str(i.get('content_id_prefix',''))[:8]}...`",
         "nexus_pending_articles":    "👀 Checking drafts awaiting review...",
         "nexus_revise_article":      f"✏️ Updating draft `{str(i.get('content_id_prefix',''))[:8]}` — adding: _{i.get('instruction', '')[:60]}_...",
+        "nexus_reject_article":      f"🗑️ Rejecting draft `{str(i.get('content_id_prefix',''))[:8]}...`",
         # Task router
         "route_task":          f"🔀 Classifying task: _{i.get('task', '')}_",
         "cost_estimate":       f"💰 Estimating cost for: _{i.get('task', '')}_",
