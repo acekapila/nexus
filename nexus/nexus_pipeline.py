@@ -1043,4 +1043,109 @@ def nexus_pending_articles() -> str:
             f"   Queued: {p['stored_at'][:16]}\n"
         )
     lines.append("To publish: `approve article <id>`")
+    lines.append("To discard: `delete article <id>`")
     return "\n".join(lines)
+
+
+def nexus_reject_article(content_id_prefix: str) -> str:
+    """
+    Reject/delete a draft that is waiting for review — moves it to 'Rejected'
+    in Notion and removes it from the pending publish queue.
+
+    Use when the user says 'delete this article', 'reject this draft',
+    'discard', 'cancel', 'don't publish', or any similar intent to
+    abandon a draft WITHOUT publishing it.
+
+    content_id_prefix: the 8-char content ID shown when the draft was created,
+                       OR a partial/full article title.
+    """
+    import concurrent.futures
+
+    pipeline = get_pipeline()
+
+    def _do_reload():
+        def _reload():
+            asyncio.run(pipeline._reload_pending_from_notion())
+        with concurrent.futures.ThreadPoolExecutor() as pool_reload:
+            try:
+                pool_reload.submit(_reload).result(timeout=30)
+            except Exception:
+                pass
+
+    def _uuid_matches(query: str) -> list:
+        return [
+            cid for cid in pipeline._pending_publishes
+            if cid.startswith(query) or cid.replace("-", "").startswith(query)
+        ]
+
+    def _title_matches(query: str) -> list:
+        q = query.lower()
+        return [
+            cid for cid, data in pipeline._pending_publishes.items()
+            if q in data.get("title", "").lower()
+            or q in data.get("topic", "").lower()
+        ]
+
+    # Resolve full content_id
+    full_id = content_id_prefix
+    is_likely_uuid = len(content_id_prefix) <= 36 and " " not in content_id_prefix
+
+    if is_likely_uuid and len(content_id_prefix) < 32:
+        matches = _uuid_matches(content_id_prefix)
+        if not matches:
+            _do_reload()
+            matches = _uuid_matches(content_id_prefix)
+        if len(matches) == 1:
+            full_id = matches[0]
+        elif len(matches) > 1:
+            options = "\n".join(
+                f"  • `{cid.replace('-', '')[:8]}` — {pipeline._pending_publishes[cid]['title']}"
+                for cid in matches
+            )
+            return f"⚠️ Multiple drafts match `{content_id_prefix}`:\n{options}\nBe more specific."
+        else:
+            is_likely_uuid = False
+
+    if not is_likely_uuid or full_id == content_id_prefix:
+        matches = _title_matches(content_id_prefix)
+        if not matches:
+            _do_reload()
+            matches = _title_matches(content_id_prefix)
+        if len(matches) == 1:
+            full_id = matches[0]
+        elif len(matches) > 1:
+            options = "\n".join(
+                f"  • `{cid.replace('-', '')[:8]}` — {pipeline._pending_publishes[cid]['title']}"
+                for cid in matches
+            )
+            return f"⚠️ Multiple drafts match `{content_id_prefix}`:\n{options}\nBe more specific."
+        else:
+            return (
+                f"❌ No pending draft found matching `{content_id_prefix}`.\n"
+                f"Use `show pending articles` to see what's waiting."
+            )
+
+    title = pipeline._pending_publishes.get(full_id, {}).get("title", full_id[:8])
+
+    def _run():
+        async def _async():
+            ntm = NotionTaskManager()
+            try:
+                await ntm.update_content_status(full_id, "rejected")
+            finally:
+                await ntm.close()
+        asyncio.run(_async())
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        try:
+            pool.submit(_run).result(timeout=30)
+        except Exception as e:
+            return f"❌ Failed to reject draft in Notion: {e}"
+
+    pipeline._pending_publishes.pop(full_id, None)
+
+    return (
+        f"🗑️ **Draft rejected and removed.**\n\n"
+        f"**'{title}'** has been moved to ❌ Rejected in Notion and will NOT be published.\n\n"
+        f"Ready for a new article? Just tell me the topic."
+    )
