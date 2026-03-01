@@ -618,11 +618,14 @@ class DeepLearningArticleGenerator(EnhancedArticleGenerator):
         research_type = research_data.get("research_type", "standard")
         is_enhanced_research = research_type in ["enhanced_deep_research_with_browsing", "deep_research_with_browsing"]
         
+        sources = []  # browsed sources used for citation references
+
         if is_enhanced_research:
-            research_context = self._build_enhanced_research_context(research_data)
+            research_context, sources = self._build_enhanced_research_context(research_data)
             urls_browsed = research_data.get("urls_analyzed", 0)
             words_extracted = research_data.get("total_words_browsed", 0)
             print(f"   🌐 Using enhanced research: {urls_browsed} URLs browsed, {words_extracted} words extracted")
+            print(f"   📎 {len(sources)} sources available for citations")
         elif research_data.get("research_type") == "deep_learning":
             research_context = self._build_deep_research_context(research_data)
             print(f"   🧠 Using deep learning from {research_data.get('articles_read', 0)} articles")
@@ -635,16 +638,28 @@ class DeepLearningArticleGenerator(EnhancedArticleGenerator):
                 research_data.get("content_gaps", [])
             )
             print("   📚 Using standard research context")
-        
+
         # Generate content with enhanced research context
         article_content = await self._generate_article_content_with_enhanced_insights(
             topic, research_context, audience, article_type, is_enhanced_research
         )
-        
+
         if not article_content:
             return {"success": False, "error": "Failed to generate article content"}
-        
-        print("   ✅ Article content generated with enhanced insights")
+
+        # ── Append ## References section ─────────────────────────────────────
+        if sources:
+            refs = "\n\n## References\n"
+            for i, source in enumerate(sources):
+                title = source.get("title") or "Source"
+                url = source.get("url", "")
+                author = source.get("author", "")
+                author_str = f" — {author}" if author else ""
+                refs += f"\n[{i + 1}] [{title}]({url}){author_str}"
+            article_content = article_content + refs
+            print(f"   📚 Appended References section with {len(sources)} sources")
+
+        print("   ✅ Article content generated with enhanced insights and citations")
         
         # Generate title based on the enriched content
         article_title = await self._generate_title_from_content(article_content, topic)
@@ -673,67 +688,84 @@ class DeepLearningArticleGenerator(EnhancedArticleGenerator):
             "research_data": research_data
         }
     
-    def _build_enhanced_research_context(self, research_data: Dict) -> str:
-        """Build research context from enhanced URL browsing data"""
-        
+    def _build_enhanced_research_context(self, research_data: Dict):
+        """Build research context from enhanced URL browsing data.
+
+        Returns a tuple (context_string, sources_list) where sources_list is the
+        list of browsed source dicts used to generate the numbered citation list
+        appended to context_string.
+        """
+
         context_parts = []
-        
+
         # Comprehensive themes from synthesis
         themes = research_data.get("comprehensive_themes", [])
         if themes:
-            context_parts.append(f"COMPREHENSIVE THEMES:\n" + "\n".join(f"- {theme}" for theme in themes))
-        
+            context_parts.append("COMPREHENSIVE THEMES:\n" + "\n".join(f"- {theme}" for theme in themes))
+
         # Evidence-based findings
         findings = research_data.get("evidence_based_findings", [])
         if findings:
-            context_parts.append(f"EVIDENCE-BASED FINDINGS:\n" + "\n".join(f"- {finding}" for finding in findings))
-        
+            context_parts.append("EVIDENCE-BASED FINDINGS:\n" + "\n".join(f"- {finding}" for finding in findings))
+
         # Novel insights from browsed content
         novel_insights = research_data.get("novel_insights", [])
         if novel_insights:
-            context_parts.append(f"NOVEL INSIGHTS FROM BROWSED SOURCES:\n" + "\n".join(f"- {insight}" for insight in novel_insights))
-        
+            context_parts.append("NOVEL INSIGHTS FROM BROWSED SOURCES:\n" + "\n".join(f"- {insight}" for insight in novel_insights))
+
         # Data-driven points with context
         data_points = research_data.get("data_driven_points", [])
         if data_points:
-            context_parts.append(f"DATA-DRIVEN INSIGHTS:\n" + "\n".join(f"- {point}" for point in data_points))
-        
+            context_parts.append("DATA-DRIVEN INSIGHTS:\n" + "\n".join(f"- {point}" for point in data_points))
+
         # Practical framework
         framework = research_data.get("practical_framework", [])
         if framework:
-            context_parts.append(f"PRACTICAL FRAMEWORK:\n" + "\n".join(f"- {item}" for item in framework))
-        
+            context_parts.append("PRACTICAL FRAMEWORK:\n" + "\n".join(f"- {item}" for item in framework))
+
         # Expert perspectives from browsed content
         expert_perspectives = research_data.get("expert_perspectives", [])
         if expert_perspectives:
-            context_parts.append(f"EXPERT PERSPECTIVES:\n" + "\n".join(f"- {perspective}" for perspective in expert_perspectives))
-        
+            context_parts.append("EXPERT PERSPECTIVES:\n" + "\n".join(f"- {perspective}" for perspective in expert_perspectives))
+
         # Implementation strategies
         strategies = research_data.get("implementation_strategies", [])
         if strategies:
-            context_parts.append(f"IMPLEMENTATION STRATEGIES:\n" + "\n".join(f"- {strategy}" for strategy in strategies))
-        
+            context_parts.append("IMPLEMENTATION STRATEGIES:\n" + "\n".join(f"- {strategy}" for strategy in strategies))
+
         # Content gaps to address
         gaps = research_data.get("content_gaps", [])
         if gaps:
-            context_parts.append(f"CONTENT GAPS TO ADDRESS:\n" + "\n".join(f"- {gap}" for gap in gaps))
-        
+            context_parts.append("CONTENT GAPS TO ADDRESS:\n" + "\n".join(f"- {gap}" for gap in gaps))
+
         # Insights from browsed content
         browsed_insights = research_data.get("browsed_insights", [])
         if browsed_insights:
-            context_parts.append(f"INSIGHTS FROM BROWSED ARTICLES:\n" + "\n".join(f"- {insight}" for insight in browsed_insights[:8]))
-        
+            context_parts.append("INSIGHTS FROM BROWSED ARTICLES:\n" + "\n".join(f"- {insight}" for insight in browsed_insights[:8]))
+
         # Unique data points
         unique_data = research_data.get("unique_data_points", [])
         if unique_data:
-            context_parts.append(f"UNIQUE DATA POINTS:\n" + "\n".join(f"- {data}" for data in unique_data))
-        
+            context_parts.append("UNIQUE DATA POINTS:\n" + "\n".join(f"- {data}" for data in unique_data))
+
         # Practical applications
         applications = research_data.get("practical_applications", [])
         if applications:
-            context_parts.append(f"PRACTICAL APPLICATIONS:\n" + "\n".join(f"- {app}" for app in applications))
-        
-        return "\n\n".join(context_parts)
+            context_parts.append("PRACTICAL APPLICATIONS:\n" + "\n".join(f"- {app}" for app in applications))
+
+        # ── Numbered source list for citation markers ─────────────────────────
+        sources = [s for s in research_data.get("browsed_sources", []) if s.get("url")]
+        if sources:
+            source_lines = "\n".join(
+                f"[{i + 1}] {s.get('title', 'Untitled')} — {s.get('url', '')}"
+                for i, s in enumerate(sources)
+            )
+            context_parts.append(
+                "NUMBERED SOURCES FOR CITATION (add [N] after sentences that draw on these):\n"
+                + source_lines
+            )
+
+        return "\n\n".join(context_parts), sources
     
     def _build_deep_research_context(self, research_data: Dict) -> str:
         """Build enhanced research context from deep learning data (existing method)"""
@@ -836,7 +868,9 @@ CRITICAL INSTRUCTIONS:
 - Integrate research insights naturally, not as obvious lists
 - Create content that's significantly more insightful than typical coverage
 - Ensure every section adds unique value based on enhanced research
-- Reference concepts from browsed sources without direct attribution
+- When a sentence uses a specific fact, statistic, or claim traceable to one of the NUMBERED SOURCES above, append the citation marker immediately after that sentence — e.g. "...grew by 40% in 2024. [1]" or "...according to recent industry analysis. [3]"
+- Only cite where genuinely applicable — not every sentence needs a marker
+- Do NOT add a References section; that will be appended automatically
 
 Write comprehensive article content that fully leverages the enhanced research:"""
         
