@@ -2,6 +2,43 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import urllib.parse
+import asyncio
+import concurrent.futures
+
+try:
+    from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
+    CRAWL4AI_AVAILABLE = True
+except ImportError:
+    CRAWL4AI_AVAILABLE = False
+
+
+async def _crawl4ai_scrape_async(url: str) -> str:
+    """Async crawl4ai scrape — JS rendering, cached."""
+    config = CrawlerRunConfig(
+        cache_mode=CacheMode.ENABLED,
+        page_timeout=15000,
+        word_count_threshold=30,
+    )
+    async with AsyncWebCrawler() as crawler:
+        result = await crawler.arun(url=url, config=config)
+        if result.success and result.markdown:
+            return result.markdown.raw_markdown or ""
+        return ""
+
+
+def _run_crawl4ai_in_thread(url: str) -> str:
+    """Run crawl4ai in an isolated thread with its own event loop — safe for Discord async context."""
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(_crawl4ai_scrape_async(url))
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run)
+        return future.result(timeout=30)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -113,18 +150,27 @@ def _bing_scrape(query: str, max_results: int) -> str:
 
 # ── Scrape ───────────────────────────────────────────────────────────────────
 def scrape_page(url: str, max_chars: int = 4000) -> str:
-    """Scrape text from a URL. Handles JS-rendered sites gracefully."""
-    JS_ONLY_SITES = ["cve.mitre.org", "twitter.com", "x.com", "instagram.com", "linkedin.com"]
+    """Scrape text from a URL. Uses crawl4ai (JS rendering) with requests fallback."""
     API_ALTERNATIVES = {
         "cve.mitre.org": "Use lookup_cve tool instead",
         "nvd.nist.gov":  "Use lookup_cve tool instead",
     }
 
-    for site in JS_ONLY_SITES:
+    # CVE sites have a dedicated tool — redirect early
+    for site, alt in API_ALTERNATIVES.items():
         if site in url:
-            alt = API_ALTERNATIVES.get(site, "Try search_web instead")
-            return f"⚠️ `{site}` requires JavaScript — cannot scrape.\n💡 {alt}"
+            return f"⚠️ `{site}` has a dedicated tool.\n💡 {alt}"
 
+    # ── Tier 1: crawl4ai (handles JS, SPAs, modern sites) ────────────────────
+    if CRAWL4AI_AVAILABLE:
+        try:
+            content = _run_crawl4ai_in_thread(url)
+            if content and len(content.split()) >= 30:
+                return f"📄 Content from {url}:\n\n{content[:max_chars]}"
+        except Exception:
+            pass  # Fall through to requests fallback
+
+    # ── Tier 2: requests + BeautifulSoup (static HTML fallback) ─────────────
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         r.raise_for_status()
@@ -152,7 +198,7 @@ def scrape_page(url: str, max_chars: int = 4000) -> str:
 
         js_indicators = ["enable javascript", "javascript is required", "please enable javascript"]
         if any(i in text.lower() for i in js_indicators) and len(text) < 500:
-            return f"⚠️ Page requires JavaScript. Try search_web instead.\n🔗 URL: {url}"
+            return f"⚠️ Page requires JavaScript and crawl4ai was unavailable.\n🔗 URL: {url}"
 
         return f"📄 Content from {url}:\n\n{text[:max_chars]}"
 

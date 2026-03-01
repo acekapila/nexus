@@ -1,20 +1,27 @@
-# enhanced_perplexity_web_researcher.py - Final fixed version with robust URL cleaning and extraction
+# enhanced_perplexity_web_researcher.py - crawl4ai-powered version with citation support
 import os
 import json
 import requests
 import asyncio
-import aiohttp
 import openai
 import anthropic
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import re
 from urllib.parse import urljoin, urlparse
 import time
-from bs4 import BeautifulSoup
 import logging
 from dataclasses import dataclass
+
+try:
+    from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
+    from crawl4ai.content_filter_strategy import BM25ContentFilter
+    from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+    CRAWL4AI_AVAILABLE = True
+except ImportError:
+    CRAWL4AI_AVAILABLE = False
+    logging.warning("crawl4ai not installed — falling back to requests+BeautifulSoup. Run: pip install crawl4ai && crawl4ai-setup")
 
 try:
     from dotenv import load_dotenv
@@ -39,21 +46,14 @@ class BrowsedContent:
     success: bool
     error_message: str = ""
 
-class EnhancedURLBrowser:
-    """URL browser for extracting content from research URLs"""
-    
+class Crawl4AIURLBrowser:
+    """URL browser powered by crawl4ai — JS rendering, BM25 filtering, LLM-ready markdown."""
+
     def __init__(self):
-        self.session = None
-        self.rate_limit_delay = 1.0  # Reduced delay
+        self.rate_limit_delay = 0.5
         self.max_content_length = 50000
-        self.timeout = 15  # Reduced timeout
-        self.max_retries = 2  # Reduced retries
-        self.user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        ]
-        
-        # Reliable domains for content extraction
+
+        # Reliable domains for URL priority scoring
         self.reliable_domains = {
             # General tech & news
             'medium.com', 'towardsdatascience.com', 'hackernoon.com',
@@ -79,20 +79,6 @@ class EnhancedURLBrowser:
             # Microsoft security blog (major threat actor disclosures)
             'microsoft.com',
         }
-    
-    async def __aenter__(self):
-        connector = aiohttp.TCPConnector(limit=10, limit_per_host=3, ssl=False)
-        timeout = aiohttp.ClientTimeout(total=self.timeout)
-        self.session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            headers={'User-Agent': self.user_agents[0]}
-        )
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
     
     def clean_url(self, raw_url: str) -> str:
         """Clean and fix malformed URLs"""
@@ -247,35 +233,82 @@ class EnhancedURLBrowser:
         
         return True
     
-    async def browse_urls(self, urls_with_metadata: List[Dict], max_urls: int = 8) -> List[BrowsedContent]:
-        """Browse URLs and extract content with enhanced debugging"""
-        
-        print(f"DEBUG: browse_urls called with {len(urls_with_metadata)} URLs, max_urls={max_urls}")
-        
+    async def browse_urls(self, urls_with_metadata: List[Dict], max_urls: int = 8,
+                          topic: str = "") -> List[BrowsedContent]:
+        """Browse URLs using crawl4ai — JS rendering, BM25 topic filtering, cached."""
+
         if not urls_with_metadata:
-            print("DEBUG: No URLs provided to browse_urls method")
+            print("DEBUG: No URLs provided to browse_urls")
             return []
-        
+
         urls_to_browse = urls_with_metadata[:max_urls]
-        print(f"DEBUG: Will attempt to browse {len(urls_to_browse)} URLs")
-        
+        print(f"DEBUG: browse_urls — {len(urls_to_browse)} URLs via crawl4ai (topic='{topic[:40]}')")
+
+        if not CRAWL4AI_AVAILABLE:
+            print("WARNING: crawl4ai not available, returning empty list")
+            return []
+
+        # Build BM25-filtered markdown generator when topic is known
+        if topic:
+            bm25_filter = BM25ContentFilter(user_query=topic, bm25_threshold=1.0)
+            md_generator = DefaultMarkdownGenerator(content_filter=bm25_filter)
+        else:
+            md_generator = DefaultMarkdownGenerator()
+
+        config = CrawlerRunConfig(
+            markdown_generator=md_generator,
+            cache_mode=CacheMode.ENABLED,
+            word_count_threshold=50,
+            page_timeout=20000,
+        )
+
         browsed_contents = []
-        
-        async with self:
+        async with AsyncWebCrawler() as crawler:
             for i, url_data in enumerate(urls_to_browse):
-                url = url_data['url']
-                print(f"DEBUG: Attempting URL {i+1}/{len(urls_to_browse)}: {url}")
-                
+                url = url_data.get("url", "")
+                if not url:
+                    continue
+                print(f"DEBUG: Crawling {i+1}/{len(urls_to_browse)}: {url[:80]}")
                 try:
-                    content = await self._extract_content_from_url(url)
-                    print(f"DEBUG: Extraction result - Success: {content.success}, Words: {content.word_count}, Method: {content.extraction_method}")
-                    
-                    if content.success and content.word_count > 20:  # Very low threshold
-                        browsed_contents.append(content)
-                        print(f"   SUCCESS: {content.word_count} words extracted using {content.extraction_method}")
+                    result = await crawler.arun(url=url, config=config)
+
+                    if result.success:
+                        # Prefer BM25-filtered markdown, fall back to raw markdown
+                        content = ""
+                        if result.markdown:
+                            content = (result.markdown.fit_markdown or
+                                       result.markdown.raw_markdown or "")
+
+                        word_count = len(content.split())
+                        title = ""
+                        author = ""
+                        publish_date = ""
+                        if result.metadata:
+                            title = result.metadata.get("title", url_data.get("title", ""))
+                            author = result.metadata.get("author", "")
+                            publish_date = result.metadata.get("publish_date", "")
+
+                        if not title:
+                            title = url_data.get("title", "")
+
+                        success = word_count >= 20 and len(content) >= 100
+                        print(f"   {'SUCCESS' if success else 'SHORT'}: {word_count} words — crawl4ai")
+
+                        browsed_contents.append(BrowsedContent(
+                            url=url,
+                            title=title,
+                            content=content[:self.max_content_length],
+                            word_count=word_count,
+                            author=author,
+                            publish_date=publish_date,
+                            extraction_method="crawl4ai",
+                            success=success,
+                            error_message="" if success else f"Insufficient content: {word_count} words"
+                        ))
                     else:
-                        print(f"   FAILED: {content.error_message}")
-                        # Fallback: use Perplexity's own snippet when scraping is blocked (e.g. Cloudflare/403)
+                        err = result.error_message or "crawl4ai returned failure"
+                        print(f"   FAILED: {err}")
+                        # Fallback: use Perplexity's own snippet when crawl4ai is blocked (e.g. Cloudflare/403)
                         snippet = url_data.get('snippet', '')
                         if snippet and len(snippet.split()) > 20:
                             fallback = BrowsedContent(
@@ -291,391 +324,33 @@ class EnhancedURLBrowser:
                             )
                             browsed_contents.append(fallback)
                             print(f"   ⚡ Using Perplexity snippet fallback for: {url[:60]} ({fallback.word_count} words)")
-                
+                        else:
+                            browsed_contents.append(BrowsedContent(
+                                url=url, title=url_data.get("title", ""), content="",
+                                word_count=0, author="", publish_date="",
+                                extraction_method="crawl4ai", success=False, error_message=err
+                            ))
+
+
                 except Exception as e:
                     print(f"   EXCEPTION: {str(e)}")
-                    continue
-                
+                    browsed_contents.append(BrowsedContent(
+                        url=url, title=url_data.get("title", ""), content="",
+                        word_count=0, author="", publish_date="",
+                        extraction_method="crawl4ai", success=False, error_message=str(e)
+                    ))
+
                 await asyncio.sleep(self.rate_limit_delay)
-        
-        print(f"DEBUG: Final browsing result - {len(browsed_contents)} URLs successfully processed")
+
+        successful = [c for c in browsed_contents if c.success]
+        print(f"DEBUG: Browsing complete — {len(successful)}/{len(browsed_contents)} successful")
         return browsed_contents
-    
-    async def _extract_content_from_url(self, url: str) -> BrowsedContent:
-        """Extract content from a single URL with enhanced error handling"""
-        for attempt in range(self.max_retries):
-            try:
-                user_agent = self.user_agents[attempt % len(self.user_agents)]
-                headers = {
-                    'User-Agent': user_agent,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                }
-                
-                async with self.session.get(url, headers=headers, allow_redirects=True) as response:
-                    print(f"DEBUG: HTTP {response.status} for {url}")
-                    
-                    if response.status != 200:
-                        if attempt == self.max_retries - 1:
-                            return BrowsedContent(
-                                url=url, title="", content="", word_count=0,
-                                author="", publish_date="", extraction_method="failed",
-                                success=False, error_message=f"HTTP {response.status}"
-                            )
-                        continue
-                    
-                    # Check content type
-                    content_type = response.headers.get('content-type', '').lower()
-                    if 'text/html' not in content_type and 'application/xhtml' not in content_type:
-                        return BrowsedContent(
-                            url=url, title="", content="", word_count=0,
-                            author="", publish_date="", extraction_method="wrong_content_type",
-                            success=False, error_message=f"Not HTML: {content_type}"
-                        )
-                    
-                    try:
-                        html_content = await response.text(encoding='utf-8', errors='ignore')
-                    except:
-                        html_content = await response.text(errors='ignore')
-                    
-                    print(f"DEBUG: Retrieved {len(html_content)} characters of HTML")
-                    
-                    if len(html_content) < 500:
-                        return BrowsedContent(
-                            url=url, title="", content="", word_count=0,
-                            author="", publish_date="", extraction_method="insufficient_html",
-                            success=False, error_message="HTML too short"
-                        )
-                    
-                    soup = BeautifulSoup(html_content, 'html.parser')
-                    return self._extract_content_from_soup(soup, url)
-            
-            except asyncio.TimeoutError:
-                print(f"DEBUG: Timeout for {url} on attempt {attempt + 1}")
-                if attempt == self.max_retries - 1:
-                    return BrowsedContent(
-                        url=url, title="", content="", word_count=0,
-                        author="", publish_date="", extraction_method="timeout",
-                        success=False, error_message="Request timeout"
-                    )
-            except Exception as e:
-                print(f"DEBUG: Exception for {url} on attempt {attempt + 1}: {str(e)}")
-                if attempt == self.max_retries - 1:
-                    return BrowsedContent(
-                        url=url, title="", content="", word_count=0,
-                        author="", publish_date="", extraction_method="exception",
-                        success=False, error_message=str(e)
-                    )
-        
-        return BrowsedContent(
-            url=url, title="", content="", word_count=0,
-            author="", publish_date="", extraction_method="failed",
-            success=False, error_message="Max retries exceeded"
-        )
-    
-    def _extract_content_from_soup(self, soup: BeautifulSoup, url: str) -> BrowsedContent:
-        """Extract content from BeautifulSoup object with aggressive strategies"""
-        
-        # Extract metadata first
-        title = self._extract_title(soup)
-        author = self._extract_author(soup)
-        publish_date = self._extract_publish_date(soup)
-        
-        print(f"DEBUG: Metadata - Title: '{title[:50]}...' Author: '{author}' Date: '{publish_date}'")
-        
-        # Clean soup BEFORE content extraction
-        self._clean_soup(soup)
-        
-        # Try multiple extraction strategies with debugging
-        content = ""
-        extraction_method = ""
-        strategies = []
-        
-        # Strategy 1: JSON-LD structured data
-        json_content = self._extract_from_json_ld(soup)
-        if json_content:
-            strategies.append(("json_ld", json_content, len(json_content.split())))
-        
-        # Strategy 2: Article tags
-        article = soup.find('article')
-        if article:
-            article_content = article.get_text(separator=' ', strip=True)
-            if article_content:
-                strategies.append(("article_tag", article_content, len(article_content.split())))
-        
-        # Strategy 3: Main content area
-        main = soup.find('main') or soup.find('[role="main"]')
-        if main:
-            main_content = main.get_text(separator=' ', strip=True)
-            if main_content:
-                strategies.append(("main_tag", main_content, len(main_content.split())))
-        
-        # Strategy 4: Common content selectors
-        selectors = [
-            '.post-content', '.entry-content', '.article-content', '.content',
-            '.post-body', '.article-body', '.story-body', '.blog-content',
-            '[class*="content"]', '[class*="article"]', '[class*="post"]',
-            '.text', '.copy', '.editorial', '.story'
-        ]
-        
-        for selector in selectors:
-            elements = soup.select(selector)
-            for element in elements:
-                temp_content = element.get_text(separator=' ', strip=True)
-                if temp_content:
-                    strategies.append((f"selector_{selector}", temp_content, len(temp_content.split())))
-        
-        # Strategy 5: Paragraph aggregation
-        paragraphs = soup.find_all('p')
-        if len(paragraphs) > 2:
-            para_content = ' '.join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20)
-            if para_content:
-                strategies.append(("paragraph_aggregation", para_content, len(para_content.split())))
-        
-        # Strategy 6: Text nodes in common containers
-        containers = soup.find_all(['div', 'section'], class_=re.compile(r'(content|article|post|story|body|text)', re.I))
-        for container in containers:
-            container_text = container.get_text(separator=' ', strip=True)
-            if len(container_text) > 200:
-                strategies.append(("container_text", container_text, len(container_text.split())))
-        
-        # Strategy 7: Aggressive fallback - get all text
-        if not strategies:
-            body = soup.find('body')
-            if body:
-                body_text = body.get_text(separator=' ', strip=True)
-                strategies.append(("body_fallback", body_text, len(body_text.split())))
-        
-        # Choose the best strategy (most words)
-        if strategies:
-            strategies.sort(key=lambda x: x[2], reverse=True)  # Sort by word count
-            extraction_method, content, word_count = strategies[0]
-            print(f"DEBUG: Best strategy: {extraction_method} with {word_count} words")
-            
-            # Try other strategies if the best one is too short
-            if word_count < 50 and len(strategies) > 1:
-                for method, text, words in strategies[1:]:
-                    if words > word_count:
-                        extraction_method, content, word_count = method, text, words
-                        print(f"DEBUG: Switched to: {extraction_method} with {word_count} words")
-                        break
-        
-        # Clean content
-        content = self._clean_extracted_content(content)
-        final_word_count = len(content.split())
-        success = len(content) >= 100 and final_word_count >= 20  # Very low threshold
-        
-        print(f"DEBUG: Final extraction - {final_word_count} words, {len(content)} chars, success: {success}")
-        if not success:
-            print(f"DEBUG: Content preview: '{content[:200]}...'")
-        
-        return BrowsedContent(
-            url=url,
-            title=title,
-            content=content[:self.max_content_length],
-            word_count=final_word_count,
-            author=author,
-            publish_date=publish_date,
-            extraction_method=extraction_method,
-            success=success,
-            error_message="" if success else f"Insufficient content: {len(content)} chars, {final_word_count} words"
-        )
-    
-    def _extract_from_json_ld(self, soup: BeautifulSoup) -> str:
-        """Extract content from JSON-LD structured data"""
-        scripts = soup.find_all('script', type='application/ld+json')
-        
-        for script in scripts:
-            try:
-                if script.string:
-                    data = json.loads(script.string)
-                    if isinstance(data, list):
-                        data = data[0]
-                    
-                    if data.get('@type') in ['Article', 'NewsArticle', 'BlogPosting']:
-                        content = data.get('articleBody', '')
-                        if content and len(content) > 200:
-                            print(f"DEBUG: JSON-LD found: {len(content)} chars")
-                            return content
-            except (json.JSONDecodeError, KeyError):
-                continue
-        
-        return ""
-    
-    def _clean_soup(self, soup: BeautifulSoup):
-        """Remove unwanted elements aggressively"""
-        # Remove script, style, and other non-content elements
-        for tag in soup(['script', 'style', 'noscript', 'iframe', 'embed', 'object', 'svg']):
-            tag.decompose()
-        
-        # Remove navigation and UI elements
-        noise_selectors = [
-            'nav', 'header', 'footer', 'aside', 'form', 'button',
-            '.navigation', '.nav', '.menu', '.sidebar', '.header', '.footer',
-            '.advertisement', '.ad', '.ads', '.advert', '.banner',
-            '.comments', '.comment', '.social-share', '.share', '.sharing',
-            '.related', '.recommended', '.newsletter', '.popup', '.modal',
-            '.cookie', '.gdpr', '.privacy', '.subscribe', '.signup',
-            '[class*="ad-"]', '[id*="ad-"]', '[class*="social"]', '[class*="share"]',
-            '[aria-label*="advertisement"]', '[aria-label*="banner"]'
-        ]
-        
-        for selector in noise_selectors:
-            for element in soup.select(selector):
-                element.decompose()
-    
-    def _extract_title(self, soup: BeautifulSoup) -> str:
-        """Extract title with multiple strategies"""
-        selectors = [
-            'h1.title', 'h1.article-title', 'h1.post-title', 'h1.entry-title',
-            '.page-title h1', '.post-header h1', '.article-header h1',
-            'h1', 'h2.title', '.title'
-        ]
-        
-        for selector in selectors:
-            element = soup.select_one(selector)
-            if element and element.get_text(strip=True):
-                title = element.get_text(strip=True)
-                if 5 < len(title) < 200:
-                    return title
-        
-        # Fallback to <title> tag
-        title_tag = soup.find('title')
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-            # Clean up title
-            for separator in [' | ', ' - ', ' :: ', ' • ']:
-                if separator in title:
-                    title = title.split(separator)[0]
-                    break
-            return title
-        
-        return "Unknown Title"
-    
-    def _extract_author(self, soup: BeautifulSoup) -> str:
-        """Extract author"""
-        selectors = [
-            '[rel="author"]', '.author-name', '.author', '.byline', 
-            '.post-author', '.article-author', 'meta[name="author"]',
-            '[class*="author"]', '[itemprop="author"]'
-        ]
-        
-        for selector in selectors:
-            element = soup.select_one(selector)
-            if element:
-                if element.name == 'meta':
-                    author = element.get('content', '').strip()
-                else:
-                    author = element.get_text(strip=True)
-                
-                if author and 2 < len(author) < 100:
-                    return author
-        
-        return ""
-    
-    def _extract_publish_date(self, soup: BeautifulSoup) -> str:
-        """Extract publish date from HTML metadata (fast path)."""
-        # 1. <time datetime="...">
-        time_elem = soup.find('time')
-        if time_elem and time_elem.get('datetime'):
-            return time_elem['datetime']
-
-        # 2. <meta name="*date*" content="...">  and OG / schema variants
-        for attr in [{'name': re.compile(r'date|time', re.I)},
-                     {'property': re.compile(r'article:published|og:updated', re.I)},
-                     {'itemprop': re.compile(r'datePublished|dateModified', re.I)}]:
-            for meta in soup.find_all('meta', attrs=attr):
-                if meta.get('content'):
-                    return meta['content']
-
-        # 3. JSON-LD structured data
-        for script in soup.find_all('script', type='application/ld+json'):
-            try:
-                data = json.loads(script.string or '{}')
-                for key in ('datePublished', 'dateModified', 'dateCreated'):
-                    if data.get(key):
-                        return data[key]
-            except Exception:
-                pass
-
-        # 4. Common CSS selectors
-        date_selectors = ['.publish-date', '.post-date', '.article-date', '.date',
-                          '.entry-date', '.byline time', '[class*="publish"]']
-        for selector in date_selectors:
-            element = soup.select_one(selector)
-            if element:
-                text = element.get('datetime') or element.get_text(strip=True)
-                if text and len(text) < 50:
-                    return text
-
-        return ""
-
-    def _parse_date_string(self, date_str: str) -> Optional[datetime]:
-        """Parse a date string into a datetime object. Returns None if unparseable."""
-        if not date_str:
-            return None
-        # Strip timezone info for simple parsing
-        date_str = re.sub(r'[TZ].*', '', date_str.strip()).strip()
-        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%B %d, %Y',
-                    '%b %d, %Y', '%d %B %Y', '%d %b %Y', '%Y'):
-            try:
-                return datetime.strptime(date_str, fmt)
-            except ValueError:
-                continue
-        return None
-
-    def _is_content_fresh(self, publish_date_str: str, max_age_months: int = 12) -> bool:
-        """Return True if content is within max_age_months, or if date is unknown."""
-        parsed = self._parse_date_string(publish_date_str)
-        if parsed is None:
-            return True  # Unknown date — allow through, prompt guard will catch stale stats
-        cutoff = datetime.now() - timedelta(days=max_age_months * 30)
-        return parsed >= cutoff
-
-    def _get_content_age_label(self, publish_date_str: str) -> str:
-        """Return human-readable freshness label for logging."""
-        parsed = self._parse_date_string(publish_date_str)
-        if parsed is None:
-            return "unknown date"
-        months_old = (datetime.now() - parsed).days // 30
-        return f"{months_old} months old ({publish_date_str[:10]})"
-    
-    def _clean_extracted_content(self, content: str) -> str:
-        """Clean extracted content"""
-        if not content:
-            return ""
-        
-        # Remove excessive whitespace
-        content = re.sub(r'\s+', ' ', content)
-        
-        # Remove common patterns
-        patterns = [
-            r'Cookie Policy.*?(?=\w)', r'Privacy Policy.*?(?=\w)',
-            r'Subscribe to.*?newsletter.*?(?=\w)', r'Follow us on.*?(?=\w)',
-            r'Share this.*?(?=\w)', r'Related.*?(?=\w)',
-            r'Advertisement.*?(?=\w)', r'Loading.*?(?=\w)',
-            r'Continue reading.*?(?=\w)', r'Read more.*?(?=\w)',
-            r'Skip to.*?(?=\w)', r'Jump to.*?(?=\w)'
-        ]
-        
-        for pattern in patterns:
-            content = re.sub(pattern, '', content, flags=re.IGNORECASE)
-        
-        # Remove URLs and email addresses
-        content = re.sub(r'http[s]?://\S+', '', content)
-        content = re.sub(r'\S+@\S+\.\S+', '', content)
-        
-        # Remove excessive punctuation
-        content = re.sub(r'[^\w\s.,!?;:\'"()-]', ' ', content)
-        content = re.sub(r'\s+', ' ', content).strip()
-        
-        return content
 
 
-# Rest of the EnhancedPerplexityWebResearcher class remains the same as in the previous version
+# Alias kept for any code that imports by the old name
+EnhancedURLBrowser = Crawl4AIURLBrowser
+
+
 class EnhancedPerplexityWebResearcher:
     """Enhanced web research with URL browsing capabilities"""
     
@@ -684,7 +359,7 @@ class EnhancedPerplexityWebResearcher:
         self.openai_client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         self.anthropic_client = anthropic.AsyncAnthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.base_url = "https://api.perplexity.ai/chat/completions"
-        self.url_browser = EnhancedURLBrowser()
+        self.url_browser = Crawl4AIURLBrowser()
         
         # Available models
         self.models = {
@@ -748,7 +423,7 @@ class EnhancedPerplexityWebResearcher:
         print(f"Step 3: Browsing top {max_urls_to_browse} URLs from {len(urls_with_metadata)} found...")
         
         # Step 3: Browse URLs for content
-        browsed_contents = await self.url_browser.browse_urls(urls_with_metadata, max_urls_to_browse)
+        browsed_contents = await self.url_browser.browse_urls(urls_with_metadata, max_urls_to_browse, topic=topic)
         
         if not browsed_contents:
             print("WARNING: No content extracted from URLs, using basic research")
