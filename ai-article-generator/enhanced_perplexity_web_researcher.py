@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 import time
 import logging
 from dataclasses import dataclass
+from bs4 import BeautifulSoup
 
 try:
     from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
@@ -51,7 +52,7 @@ class Crawl4AIURLBrowser:
 
     def __init__(self):
         self.rate_limit_delay = 0.5
-        self.max_content_length = 50000
+        self.max_content_length = 80000
 
         # Reliable domains for URL priority scoring
         self.reliable_domains = {
@@ -232,7 +233,58 @@ class Crawl4AIURLBrowser:
             return False
         
         return True
-    
+
+    def _search_duckduckgo_for_urls(self, topic: str, max_results: int = 10) -> List[Dict]:
+        """
+        Discover additional article URLs from DuckDuckGo Lite.
+        Mirrors _ddg_lite() logic in nexus/tools/web_tools.py.
+        Returns list of {url, title, snippet, priority, source} dicts.
+        Non-fatal — returns [] on any error.
+        """
+        HEADERS = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        try:
+            r = requests.post(
+                "https://lite.duckduckgo.com/lite/",
+                data={"q": topic},
+                headers=HEADERS,
+                timeout=10,
+            )
+            soup = BeautifulSoup(r.text, "html.parser")
+            results = []
+            for row in soup.select("tr"):
+                if len(results) >= max_results:
+                    break
+                link = row.select_one("a.result-link")
+                if not link:
+                    continue
+                href = self.clean_url(link.get("href", ""))
+                if not href or not self._is_valid_article_url(href):
+                    continue
+                title = link.get_text(strip=True)
+                snippet = ""
+                next_row = row.find_next_sibling("tr")
+                if next_row:
+                    s = next_row.select_one("td.result-snippet")
+                    if s:
+                        snippet = s.get_text(strip=True)
+                priority = self._calculate_url_priority(
+                    href, {"snippet": snippet, "title": title}
+                )
+                results.append({
+                    "url": href,
+                    "title": title,
+                    "snippet": snippet,
+                    "priority": priority,
+                    "source": "duckduckgo",
+                })
+            print(f"  DDG search found {len(results)} URLs for: {topic[:60]}")
+            return results
+        except Exception as e:
+            logger.warning(f"DuckDuckGo URL search failed (non-fatal): {e}")
+            return []
+
     async def browse_urls(self, urls_with_metadata: List[Dict], max_urls: int = 8,
                           topic: str = "") -> List[BrowsedContent]:
         """Browse URLs using crawl4ai — JS rendering, BM25 topic filtering, cached."""
@@ -415,15 +467,52 @@ class EnhancedPerplexityWebResearcher:
         # Step 2: Extract and browse URLs from research
         print("Step 2: Extracting URLs from research data...")
         urls_with_metadata = self.url_browser.extract_prioritized_urls(initial_research)
-        
+
         if not urls_with_metadata:
             print("WARNING: No URLs found for browsing, proceeding with basic research")
             return self.format_research_for_article_generation(initial_research)
-        
-        print(f"Step 3: Browsing top {max_urls_to_browse} URLs from {len(urls_with_metadata)} found...")
-        
-        # Step 3: Browse URLs for content
-        browsed_contents = await self.url_browser.browse_urls(urls_with_metadata, max_urls_to_browse, topic=topic)
+
+        # Step 2b: DuckDuckGo parallel URL discovery
+        print("Step 2b: Running DuckDuckGo URL discovery...")
+        ddg_urls = self.url_browser._search_duckduckgo_for_urls(topic, max_results=10)
+
+        # Step 2c: Merge + deduplicate by URL, re-sort by priority
+        seen = {u["url"] for u in urls_with_metadata}
+        for u in ddg_urls:
+            if u["url"] not in seen:
+                urls_with_metadata.append(u)
+                seen.add(u["url"])
+        urls_with_metadata.sort(key=lambda x: x.get("priority", 0), reverse=True)
+        print(f"  URL pool: {len(urls_with_metadata)} total ({len(ddg_urls)} from DDG, {len(urls_with_metadata) - len(ddg_urls)} from Perplexity)")
+
+        # Step 2d: Safety filter — skip malicious/suspicious URLs before crawling
+        print("Step 2d: Running URL safety checks...")
+        try:
+            from url_safety_checker import URLSafetyChecker
+            checker = URLSafetyChecker(trusted_domains=set(self.url_browser.reliable_domains))
+            safe_urls, skipped_unsafe = [], []
+            for u in urls_with_metadata:
+                safety = checker.check_url(u["url"])
+                u["safety"] = safety
+                if safety["safe"]:
+                    safe_urls.append(u)
+                else:
+                    skipped_unsafe.append(u)
+                    print(f"  ⚠️  SKIPPED (risk={safety['risk_level']}, score={safety['score']:.2f}): {u['url'][:70]}")
+            print(f"  Safety: {len(safe_urls)} safe, {len(skipped_unsafe)} skipped")
+        except ImportError:
+            logger.warning("url_safety_checker not found — skipping safety filter")
+            safe_urls = urls_with_metadata
+            skipped_unsafe = []
+            ddg_urls = ddg_urls if 'ddg_urls' in locals() else []
+
+        # Build lookup for attaching safety data to browsed_content later
+        url_meta_lookup = {u["url"]: u for u in safe_urls}
+
+        print(f"Step 3: Browsing top {max_urls_to_browse} URLs from {len(safe_urls)} safe URLs...")
+
+        # Step 3: Browse URLs for content (safe_urls only)
+        browsed_contents = await self.url_browser.browse_urls(safe_urls, max_urls_to_browse, topic=topic)
         
         if not browsed_contents:
             print("WARNING: No content extracted from URLs, using basic research")
@@ -451,6 +540,8 @@ class EnhancedPerplexityWebResearcher:
             "model_used": self.current_model,
             "urls_found": len(urls_with_metadata),
             "urls_browsed": len(browsed_contents),
+            "ddg_urls_found": len(ddg_urls),
+            "urls_skipped_unsafe": len(skipped_unsafe),
             "total_words_extracted": sum(content.word_count for content in browsed_contents),
             "initial_research": initial_research,
             "browsed_content": [
@@ -462,7 +553,11 @@ class EnhancedPerplexityWebResearcher:
                     "word_count": content.word_count,
                     "author": content.author,
                     "publish_date": content.publish_date,
-                    "extraction_method": content.extraction_method
+                    "extraction_method": content.extraction_method,
+                    "safety": url_meta_lookup.get(content.url, {}).get(
+                        "safety",
+                        {"safe": True, "risk_level": "low", "score": 1.0, "reasons": []}
+                    ),
                 }
                 for content in browsed_contents
             ],
@@ -503,7 +598,7 @@ class EnhancedPerplexityWebResearcher:
             analysis_prompt = f"""Analyze this article content about "{topic}" and extract insights.{context_instruction}
 
 ARTICLE CONTENT:
-{content.content[:8000]}
+{content.content[:12000]}
 
 Provide analysis in JSON format:
 {{
@@ -515,12 +610,12 @@ Provide analysis in JSON format:
   "credibility_score": "high|medium|low based on content quality",
   "content_type": "news|blog|research|academic|commercial"
 }}"""
-            
+
             try:
                 response = await self.anthropic_client.messages.create(
                     model="claude-sonnet-4-6",
                     messages=[{"role": "user", "content": analysis_prompt}],
-                    max_tokens=1500,
+                    max_tokens=2000,
                 )
 
                 analysis_text = response.content[0].text.strip()
@@ -666,7 +761,8 @@ Create enhanced synthesis in JSON format:
                     "extraction_method": content.get("extraction_method", "")
                 }
                 for content in browsed_content[:6]
-            ]
+            ],
+            "browsed_content": browsed_content,  # full list with safety — for Notion sources section
         }
     
     def _create_enhanced_research_summary(self, enhanced_synthesis: Dict, research_data: Dict) -> str:

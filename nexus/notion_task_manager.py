@@ -309,6 +309,97 @@ class NotionTaskManager:
                     return block["id"]
         return None
 
+    async def append_sources_to_draft(
+        self,
+        draft_page_id: str,
+        browsed_content: List[Dict],
+    ) -> bool:
+        """
+        Append a '📚 Research Sources' section to the bottom of a Notion draft page.
+
+        Each source becomes a bulleted list item with a clickable hyperlink, word count,
+        and a ✅/⚠️ safety icon.  Blocks are sent in batches of 100 (Notion API limit).
+
+        Returns True on success, False on any API error.
+        """
+        if not browsed_content:
+            return True  # Nothing to append — not an error
+
+        blocks: List[Dict] = []
+
+        # ── Section header ─────────────────────────────────────────────────────
+        blocks.append({"object": "block", "type": "divider", "divider": {}})
+        blocks.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {
+                "rich_text": [{"type": "text", "text": {"content": "📚 Research Sources"}}]
+            },
+        })
+
+        safe_count = sum(
+            1 for s in browsed_content if s.get("safety", {}).get("safe", True)
+        )
+        blocks.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [{
+                    "type": "text",
+                    "text": {
+                        "content": (
+                            f"{len(browsed_content)} URLs browsed | "
+                            f"{safe_count} safe | "
+                            f"{len(browsed_content) - safe_count} flagged"
+                        )
+                    },
+                }]
+            },
+        })
+
+        # ── One bullet per source ───────────────────────────────────────────────
+        for source in browsed_content:
+            url = source.get("url", "")
+            if not url:
+                continue
+            title = (source.get("title", "") or url[:60])[:100]
+            word_count = source.get("word_count", 0)
+            safety = source.get("safety", {"safe": True, "risk_level": "low"})
+            icon = "✅" if safety.get("safe", True) else "⚠️"
+            risk = safety.get("risk_level", "low")
+
+            blocks.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [
+                        {"type": "text", "text": {"content": f"{icon} "}},
+                        {
+                            "type": "text",
+                            "text": {"content": title, "link": {"url": url}},
+                        },
+                        {
+                            "type": "text",
+                            "text": {"content": f" — {word_count:,} words [{risk}]"},
+                        },
+                    ]
+                },
+            })
+
+        # ── Batch-send to Notion (max 100 children per request) ────────────────
+        page_id_clean = draft_page_id.replace("-", "")
+        for i in range(0, len(blocks), 100):
+            result = await self.api.patch(
+                f"blocks/{page_id_clean}/children",
+                {"children": blocks[i: i + 100]},
+            )
+            if result.get("object") == "error":
+                print(f"  ❌ append_sources error: {result.get('message')}")
+                return False
+
+        print(f"  ✅ Sources section appended ({len(browsed_content)} URLs, {safe_count} safe)")
+        return True
+
     async def find_general_task_by_title(self, task: str) -> Optional[Dict]:
         """
         Search for an existing general task by title (case-insensitive partial match).

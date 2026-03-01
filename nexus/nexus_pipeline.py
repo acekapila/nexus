@@ -432,6 +432,17 @@ class NexusPipeline:
                 podcast_script=podcast_script,
             )
 
+            # ── Step 8b: Append research sources section to Notion draft ─────────
+            try:
+                draft_page_id = await ntm.find_draft_page_id(content_id)
+                browsed_for_notion = research_data.get("browsed_content", [])
+                if draft_page_id and browsed_for_notion:
+                    await ntm.append_sources_to_draft(draft_page_id, browsed_for_notion)
+                else:
+                    print("  ℹ️  Sources section skipped (no draft page or no browsed content)")
+            except Exception as e:
+                print(f"  ⚠️ Sources section append failed (non-fatal): {e}")
+
             # save_draft_to_notion already moves status to "Your Review"
             # but we also want to update the metadata
             await ntm.update_content_status(
