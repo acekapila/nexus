@@ -474,6 +474,18 @@ def nexus_revise_article(content_id_prefix: str, instruction: str) -> str:
         return f"❌ Nexus pipeline not available: {e}"
 
 
+def nexus_reject_article(content_id_prefix: str) -> str:
+    """
+    Reject/delete a draft waiting for review — moves it to Rejected in Notion
+    and removes it from the pending publish queue.
+    """
+    try:
+        from nexus_pipeline import nexus_reject_article as _reject
+        return _reject(content_id_prefix)
+    except ImportError as e:
+        return f"❌ Nexus pipeline not available: {e}"
+
+
 # ── Task Router (Phase 5) ─────────────────────────────────────────────────────
 
 def route_task(task: str) -> str:
