@@ -104,6 +104,8 @@ CLAUDE_TRIGGERS = [
     "business summary", "briefing",
     # Article pipeline — always use Claude
     "write article", "write an article", "generate article", "create article",
+    "write another article", "write one more article", "write me an article",
+    "write a new article", "another article", "new article on", "article on",
     "write blog", "write a blog post", "generate blog",
     "write podcast", "create podcast episode",
     "approve article", "publish article", "approve and publish",
@@ -405,8 +407,10 @@ TOOLS = [
             "Runs: Research (Perplexity + URL browsing) → GPT-4o-mini generation → "
             "Quality control → Podcast script → Save draft to Notion. "
             "Sends Discord notification when the draft is ready for review. "
-            "Use this when Sumit wants to write a blog post, article, or podcast script. "
-            "This is a LONG RUNNING operation (5-10 minutes). Tell the user it has started."
+            "MANDATORY: ALWAYS call this tool whenever Sumit asks to write, create, generate, or produce "
+            "any article, blog post, or podcast — including 'write one more', 'write another', 'write a new one', "
+            "'write me an article on X'. NEVER write article content yourself inline. "
+            "This is a LONG RUNNING operation (5-10 minutes). Tell the user it has started and they'll be notified when the draft is ready."
         ),
         "input_schema": {
             "type": "object",
